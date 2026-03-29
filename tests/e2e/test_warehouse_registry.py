@@ -200,6 +200,101 @@ class TestWarehouseAdd:
         assert "Display name: My Project Documents" in result.output
 
 
+class TestWarehouseRemove:
+    """Test warehouse remove command."""
+
+    def test_remove_warehouse(self, runner, tmp_path):
+        """Remove a warehouse from registry."""
+        # Add warehouses
+        wh1 = tmp_path / "wh1"
+        wh1.mkdir()
+        (wh1 / ".dwh").mkdir()
+        run_cli(runner, ["warehouse", "add", str(wh1)])
+
+        wh2 = tmp_path / "wh2"
+        wh2.mkdir()
+        (wh2 / ".dwh").mkdir()
+        run_cli(runner, ["warehouse", "add", str(wh2)])
+
+        # Remove one
+        result = run_cli(runner, ["warehouse", "remove", "wh1"])
+
+        assert result.exit_code == 0
+        assert "Removed warehouse: wh1" in result.output
+
+        # Verify it's gone
+        result = run_cli(runner, ["warehouse", "list"])
+        assert "wh1" not in result.output
+        assert "wh2" in result.output
+
+    def test_remove_nonexistent_fails(self, runner, tmp_path):
+        """Remove non-existent warehouse fails."""
+        result = run_cli(runner, ["warehouse", "remove", "nonexistent"])
+
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+    def test_remove_shows_available_on_error(self, runner, tmp_path):
+        """Remove shows available warehouses on error."""
+        # Add a warehouse
+        wh_path = tmp_path / "actual_wh"
+        wh_path.mkdir()
+        (wh_path / ".dwh").mkdir()
+        run_cli(runner, ["warehouse", "add", str(wh_path)])
+
+        # Try to remove wrong name
+        result = run_cli(runner, ["warehouse", "remove", "wrong_name"])
+
+        assert result.exit_code != 0
+        assert "actual_wh" in result.output
+
+    def test_remove_selected_warehouse_warns(self, runner, tmp_path):
+        """Removing selected warehouse shows warning."""
+        wh_path = tmp_path / "selected_wh"
+        wh_path.mkdir()
+        (wh_path / ".dwh").mkdir()
+        run_cli(runner, ["warehouse", "add", str(wh_path)])
+
+        # Remove it (it's auto-selected as first)
+        result = run_cli(runner, ["warehouse", "remove", "selected_wh"])
+
+        assert result.exit_code == 0
+        assert "this was the selected warehouse" in result.output.lower()
+
+    def test_remove_last_warehouse_shows_helpful_message(self, runner, tmp_path):
+        """Removing last warehouse shows appropriate message."""
+        wh_path = tmp_path / "only_wh"
+        wh_path.mkdir()
+        (wh_path / ".dwh").mkdir()
+        run_cli(runner, ["warehouse", "add", str(wh_path)])
+
+        result = run_cli(runner, ["warehouse", "remove", "only_wh"])
+
+        assert result.exit_code == 0
+        assert "no warehouses remain" in result.output.lower()
+
+    def test_remove_non_selected_preserves_selection(self, runner, tmp_path):
+        """Removing non-selected warehouse preserves selection."""
+        wh1 = tmp_path / "wh1"
+        wh1.mkdir()
+        (wh1 / ".dwh").mkdir()
+        run_cli(runner, ["warehouse", "add", str(wh1)])
+
+        wh2 = tmp_path / "wh2"
+        wh2.mkdir()
+        (wh2 / ".dwh").mkdir()
+        run_cli(runner, ["warehouse", "add", str(wh2)])
+
+        # wh1 is auto-selected (first), remove wh2
+        run_cli(runner, ["warehouse", "remove", "wh2"])
+
+        # Verify wh1 still selected
+        result = run_cli(runner, ["warehouse", "list"])
+        lines = result.output.split("\n")
+        wh1_line = next(line for line in lines if "wh1" in line)
+        assert "*" in wh1_line
+
+
 class TestWarehouseSelect:
     """Test warehouse select command."""
 
