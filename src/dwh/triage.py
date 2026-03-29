@@ -230,12 +230,17 @@ def triage_sync(
 
         conn.commit()
 
-    # Clear triage state and directory
-    conn.execute("DELETE FROM triage_state")
-    conn.commit()
+    # Clear triage state and directory only if all files were processed
+    if len(triage_files) == 0:
+        # All files were classified or removed, safe to clean up
+        conn.execute("DELETE FROM triage_state")
+        conn.commit()
 
-    if triage_dir.exists():
-        shutil.rmtree(triage_dir)
+        if triage_dir.exists():
+            shutil.rmtree(triage_dir)
+    else:
+        # Files remain in triage, keep state and directory
+        pass
 
     return {
         "classified": len(matches),

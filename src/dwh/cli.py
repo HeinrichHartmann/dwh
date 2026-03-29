@@ -289,6 +289,16 @@ def triage_sync_cmd():
 
         if result["skipped"] > 0:
             click.echo(f"⚠ Skipped {result['skipped']} files still in triage/")
+            click.echo()
+            click.echo(
+                "Files must be moved from _triage/ to category directories at warehouse root."
+            )
+            click.echo("Example:")
+            click.echo("  mv _triage/file.pdf finance/")
+            click.echo()
+            click.echo(
+                "Triage directory preserved. Run 'dwh triage sync' again after organizing files."
+            )
 
         if result["ambiguous"]:
             click.echo("⚠ Ambiguous files (skipped):")

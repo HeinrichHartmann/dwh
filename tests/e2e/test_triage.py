@@ -267,17 +267,23 @@ class TestTriageWorkflow:
         triage_dir = tmp_warehouse / "_triage"
         assert triage_dir.exists()
 
-        # 3. User organizes files
+        # 3. User organizes files (move all 4 files)
         (tmp_warehouse / "work").mkdir(parents=True)
         (tmp_warehouse / "personal").mkdir(parents=True)
 
         (triage_dir / "file1.txt").rename(tmp_warehouse / "work" / "report.txt")
         (triage_dir / "file2.txt").rename(tmp_warehouse / "personal" / "notes.txt")
+        (triage_dir / "subdir" / "nested.txt").rename(
+            tmp_warehouse / "work" / "nested.txt"
+        )
+        (triage_dir / "subdir" / "deeper" / "deep.txt").rename(
+            tmp_warehouse / "personal" / "deep.txt"
+        )
 
         # 4. Sync
         result = run_cli(runner, ["triage", "sync"])
         assert result.exit_code == 0
-        assert "Classified 2 files" in result.output
+        assert "Classified 4 files" in result.output
 
         # 5. Verify results
         assert not triage_dir.exists()
@@ -288,7 +294,7 @@ class TestTriageWorkflow:
         assert len(classify_files) == 1
 
         classify_record = json.loads(classify_files[0].read_text())
-        assert len(classify_record["classifications"]) == 2
+        assert len(classify_record["classifications"]) == 4
 
         # Check database
         import sqlite3
@@ -298,12 +304,14 @@ class TestTriageWorkflow:
         conn.row_factory = sqlite3.Row
 
         documents = conn.execute("SELECT * FROM documents ORDER BY id").fetchall()
-        assert len(documents) == 2
+        assert len(documents) == 4
 
-        # Check both documents exist (order-independent)
+        # Check all documents exist (order-independent)
         doc_map = {doc["name"]: doc["category"] for doc in documents}
         assert doc_map["report.txt"] == "work"
         assert doc_map["notes.txt"] == "personal"
+        assert doc_map["nested.txt"] == "work"
+        assert doc_map["deep.txt"] == "personal"
 
         conn.close()
 
@@ -345,4 +353,73 @@ class TestTriageWorkflow:
         conn = sqlite3.connect(db_path)
         documents = conn.execute("SELECT * FROM documents").fetchall()
         assert len(documents) == 2
+        conn.close()
+
+
+class TestTriageSkippedFiles:
+    """Test triage sync behavior when files are skipped (Issue #1)."""
+
+    def test_sync_preserves_triage_when_files_skipped(
+        self, runner, tmp_warehouse, single_file
+    ):
+        """Triage sync preserves _triage/ directory when files are skipped."""
+        # Import and triage
+        run_cli(runner, ["drop", "import", "-m", "Test", str(single_file)])
+        run_cli(runner, ["triage", "checkout"])
+
+        # Don't move the file (simulate user mistake)
+        triage_dir = tmp_warehouse / "_triage"
+        assert triage_dir.exists()
+        assert (triage_dir / single_file.name).exists()
+
+        # Sync (should skip the file)
+        result = run_cli(runner, ["triage", "sync"])
+
+        assert result.exit_code == 0
+        assert "Skipped 1 files" in result.output
+
+        # Triage directory should still exist (not deleted)
+        assert triage_dir.exists()
+        assert (triage_dir / single_file.name).exists()
+
+        # Triage state should be preserved
+        import sqlite3
+
+        db_path = tmp_warehouse / ".dwh" / "dwh.db"
+        conn = sqlite3.connect(db_path)
+        state = conn.execute("SELECT * FROM triage_state").fetchone()
+        assert state is not None
+        conn.close()
+
+    def test_sync_clears_triage_when_all_classified(
+        self, runner, tmp_warehouse, single_file
+    ):
+        """Triage sync clears _triage/ when all files are classified."""
+        # Import and triage
+        run_cli(runner, ["drop", "import", "-m", "Test", str(single_file)])
+        run_cli(runner, ["triage", "checkout"])
+
+        # Move file to category
+        docs_dir = tmp_warehouse / "docs"
+        docs_dir.mkdir(parents=True)
+
+        triage_dir = tmp_warehouse / "_triage"
+        (triage_dir / single_file.name).rename(docs_dir / single_file.name)
+
+        # Sync
+        result = run_cli(runner, ["triage", "sync"])
+
+        assert result.exit_code == 0
+        assert "Classified 1 files" in result.output
+
+        # Triage directory should be deleted
+        assert not triage_dir.exists()
+
+        # Triage state should be cleared
+        import sqlite3
+
+        db_path = tmp_warehouse / ".dwh" / "dwh.db"
+        conn = sqlite3.connect(db_path)
+        state = conn.execute("SELECT * FROM triage_state").fetchone()
+        assert state is None
         conn.close()
