@@ -18,12 +18,13 @@ def isolated_config(tmp_path, monkeypatch):
 
     This ensures each test gets its own global config directory,
     preventing warehouse registrations from leaking between tests.
+    Uses DWH_CONFIG_DIR environment variable to sandbox the config.
     """
-    test_config_dir = tmp_path / ".config" / "dwh"
+    test_config_dir = tmp_path / ".dwh_test_config"
     test_config_dir.mkdir(parents=True, exist_ok=True)
 
-    # Override XDG_CONFIG_HOME to point to test directory
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    # Override DWH_CONFIG_DIR to point to test directory
+    monkeypatch.setenv("DWH_CONFIG_DIR", str(test_config_dir))
 
     return test_config_dir
 
