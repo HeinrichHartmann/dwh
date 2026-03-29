@@ -97,17 +97,21 @@ def empty_dir(tmp_path):
 # Test helpers
 
 
-def run_cli(runner: CliRunner, args: list[str]) -> Any:
+def run_cli(runner: CliRunner, args: list[str], input: str | None = None) -> Any:
     """Run dwh CLI and return result."""
-    return runner.invoke(main, args)
+    return runner.invoke(main, args, input=input)
 
 
 def extract_drop_id(output: str) -> str:
-    """Extract drop_id from CLI output."""
-    match = re.search(r"d_\d{8}_\d{6}_[a-f0-9]{8}", output)
+    """Extract drop_id from CLI output.
+
+    Looks for 'Drop ID: <id>' to avoid matching drop IDs
+    from duplicate warnings or other messages.
+    """
+    match = re.search(r"Drop ID: (d_\d{8}_\d{6}_[a-f0-9]{8})", output)
     if not match:
         raise ValueError(f"No drop_id found in output: {output}")
-    return match.group(0)
+    return match.group(1)
 
 
 def compute_file_hash(path: Path) -> str:

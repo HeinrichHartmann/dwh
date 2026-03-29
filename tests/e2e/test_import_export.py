@@ -207,7 +207,11 @@ class TestDropList:
     def test_list_shows_drops(self, runner, tmp_warehouse, single_file):
         """List should show imported drops."""
         run_cli(runner, ["drop", "import", "-m", "First drop", str(single_file)])
-        run_cli(runner, ["drop", "import", "-m", "Second drop", str(single_file)])
+        run_cli(
+            runner,
+            ["drop", "import", "-m", "Second drop", str(single_file)],
+            input="y\n",  # Confirm duplicate import
+        )
 
         result = run_cli(runner, ["drop", "list"])
 
@@ -229,7 +233,11 @@ class TestDropList:
     def test_list_orders_by_date_desc(self, runner, tmp_warehouse, single_file):
         """Most recent drops should appear first."""
         run_cli(runner, ["drop", "import", "-m", "First", str(single_file)])
-        run_cli(runner, ["drop", "import", "-m", "Second", str(single_file)])
+        run_cli(
+            runner,
+            ["drop", "import", "-m", "Second", str(single_file)],
+            input="y\n",  # Confirm duplicate import
+        )
 
         result = run_cli(runner, ["drop", "list"])
 
@@ -427,7 +435,11 @@ class TestImportExportRoundtrip:
         result1 = run_cli(runner, ["drop", "import", "-m", "First", str(sample_files)])
         drop_id1 = extract_drop_id(result1.output)
 
-        result2 = run_cli(runner, ["drop", "import", "-m", "Second", str(sample_files)])
+        result2 = run_cli(
+            runner,
+            ["drop", "import", "-m", "Second", str(sample_files)],
+            input="y\n",  # Confirm duplicate import
+        )
         drop_id2 = extract_drop_id(result2.output)
 
         # Export both
@@ -484,7 +496,11 @@ class TestProvenanceAndReceipts:
         result1 = run_cli(runner, ["drop", "import", "-m", "First", str(single_file)])
         drop_id1 = extract_drop_id(result1.output)
 
-        result2 = run_cli(runner, ["drop", "import", "-m", "Second", str(single_file)])
+        result2 = run_cli(
+            runner,
+            ["drop", "import", "-m", "Second", str(single_file)],
+            input="y\n",  # Confirm duplicate import
+        )
         drop_id2 = extract_drop_id(result2.output)
 
         assert drop_id1 != drop_id2
@@ -492,8 +508,16 @@ class TestProvenanceAndReceipts:
     def test_history_is_numbered_sequentially(self, runner, tmp_warehouse, single_file):
         """History folders should be numbered sequentially."""
         run_cli(runner, ["drop", "import", "-m", "First", str(single_file)])
-        run_cli(runner, ["drop", "import", "-m", "Second", str(single_file)])
-        run_cli(runner, ["drop", "import", "-m", "Third", str(single_file)])
+        run_cli(
+            runner,
+            ["drop", "import", "-m", "Second", str(single_file)],
+            input="y\n",  # Confirm duplicate import
+        )
+        run_cli(
+            runner,
+            ["drop", "import", "-m", "Third", str(single_file)],
+            input="y\n",  # Confirm duplicate import
+        )
 
         history_dir = tmp_warehouse / "_history"
         history_items = sorted(history_dir.iterdir())
@@ -516,7 +540,11 @@ class TestDeduplication:
     ):
         """Importing same file twice should create two separate drops."""
         run_cli(runner, ["drop", "import", "-m", "First", str(single_file)])
-        run_cli(runner, ["drop", "import", "-m", "Second", str(single_file)])
+        run_cli(
+            runner,
+            ["drop", "import", "-m", "Second", str(single_file)],
+            input="y\n",  # Confirm duplicate import
+        )
 
         result = run_cli(runner, ["drop", "list"])
 
@@ -529,7 +557,11 @@ class TestDeduplication:
         result1 = run_cli(runner, ["drop", "import", "-m", "First", str(single_file)])
         drop_id1 = extract_drop_id(result1.output)
 
-        result2 = run_cli(runner, ["drop", "import", "-m", "Second", str(single_file)])
+        result2 = run_cli(
+            runner,
+            ["drop", "import", "-m", "Second", str(single_file)],
+            input="y\n",  # Confirm duplicate import
+        )
         drop_id2 = extract_drop_id(result2.output)
 
         # Export both
@@ -543,6 +575,132 @@ class TestDeduplication:
         assert result2.exit_code == 0
         assert (export1 / single_file.name).exists()
         assert (export2 / single_file.name).exists()
+
+
+class TestDuplicateDetection:
+    """Test duplicate drop detection (ADR-005 Phase 1)."""
+
+    def test_duplicate_tree_detected(self, runner, tmp_warehouse, sample_files):
+        """Re-importing exact same tree should detect duplicate."""
+        # First import
+        result1 = run_cli(
+            runner, ["drop", "import", "-m", "First import", str(sample_files)]
+        )
+        assert result1.exit_code == 0
+        drop_id1 = extract_drop_id(result1.output)
+
+        # Second import of same tree - should detect duplicate
+        result2 = run_cli(
+            runner,
+            ["drop", "import", "-m", "Second import", str(sample_files)],
+            input="n\n",  # User cancels
+        )
+
+        assert "This exact tree was imported before" in result2.output
+        assert drop_id1 in result2.output
+        assert "First import" in result2.output
+        assert "Import cancelled" in result2.output
+
+    def test_duplicate_can_proceed(self, runner, tmp_warehouse, sample_files):
+        """User can choose to proceed with duplicate import."""
+        # First import
+        run_cli(runner, ["drop", "import", "-m", "Original", str(sample_files)])
+
+        # Second import - user proceeds
+        result = run_cli(
+            runner,
+            ["drop", "import", "-m", "Verification", str(sample_files)],
+            input="y\n",  # User confirms
+        )
+
+        assert result.exit_code == 0
+        assert "Imported 4 files" in result.output
+        drop_id = extract_drop_id(result.output)
+        assert drop_id.startswith("d_")
+
+    def test_duplicate_creates_verification_record(
+        self, runner, tmp_warehouse, sample_files
+    ):
+        """Proceeding with duplicate creates verification record."""
+        # First import
+        run_cli(runner, ["drop", "import", "-m", "Original", str(sample_files)])
+
+        # Second import - creates verification
+        run_cli(
+            runner,
+            ["drop", "import", "-m", "Verification", str(sample_files)],
+            input="y\n",
+        )
+
+        # Verify two drops exist
+        result = run_cli(runner, ["drop", "list"])
+        assert result.output.count("Original") == 1
+        assert result.output.count("Verification") == 1
+
+    def test_different_content_not_duplicate(self, runner, tmp_warehouse, tmp_path):
+        """Different content should not trigger duplicate detection."""
+        # Create two different files
+        file1 = tmp_path / "file1.txt"
+        file1.write_text("Content A")
+
+        file2 = tmp_path / "file2.txt"
+        file2.write_text("Content B")
+
+        # Import both
+        result1 = run_cli(runner, ["drop", "import", "-m", "First", str(file1)])
+        result2 = run_cli(runner, ["drop", "import", "-m", "Second", str(file2)])
+
+        # Second import should not detect duplicate
+        assert result1.exit_code == 0
+        assert result2.exit_code == 0
+        assert "This exact tree was imported before" not in result2.output
+
+    def test_same_content_different_path_is_duplicate(
+        self, runner, tmp_warehouse, sample_files, tmp_path
+    ):
+        """Same content from different path should be detected as duplicate."""
+        # First import from original location
+        run_cli(runner, ["drop", "import", "-m", "Original", str(sample_files)])
+
+        # Copy to different location
+        import shutil
+
+        copied_dir = tmp_path.parent / "copied_samples"
+        shutil.copytree(sample_files, copied_dir)
+
+        # Import from new location - should detect duplicate
+        result = run_cli(
+            runner,
+            ["drop", "import", "-m", "From copy", str(copied_dir)],
+            input="n\n",
+        )
+
+        assert "This exact tree was imported before" in result.output
+        assert "Original" in result.output
+
+    def test_partial_overlap_not_duplicate(self, runner, tmp_warehouse, tmp_path):
+        """Partial file overlap should not trigger duplicate detection."""
+        # First import: 2 files
+        file1 = tmp_path / "file1.txt"
+        file2 = tmp_path / "file2.txt"
+        file1.write_text("Content 1")
+        file2.write_text("Content 2")
+
+        run_cli(runner, ["drop", "import", "-m", "Two files", str(file1), str(file2)])
+
+        # Second import: 3 files (includes first 2 + new one)
+        file3 = tmp_path / "file3.txt"
+        file3.write_text("Content 3")
+
+        result = run_cli(
+            runner,
+            ["drop", "import", "-m", "Three files", str(file1), str(file2), str(file3)],
+        )
+
+        # Should not detect duplicate (different tree structure)
+        assert result.exit_code == 0
+        assert "This exact tree was imported before" not in result.output
+        assert "Imported 3 files" in result.output
 
 
 class TestErrorHandling:
