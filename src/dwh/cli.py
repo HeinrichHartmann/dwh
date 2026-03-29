@@ -822,6 +822,140 @@ def _collect_commands(
 
 
 @main.command()
+@click.argument("path", required=False, default=".")
+def audit(path: str):
+    """Audit warehouse filesystem consistency.
+
+    Checks for orphaned files, missing files, relocated files, and duplicates.
+    """
+    try:
+        from dwh import audit as audit_module
+
+        wh = warehouse.resolve_warehouse()
+        conn = wh.connect()
+
+        audit_path = Path(path)
+        result = audit_module.audit_warehouse(wh.root, audit_path, conn)
+
+        # Display header
+        click.echo()
+        click.echo("Warehouse Audit Report")
+        click.echo("=" * 60)
+        if audit_path == Path("."):
+            click.echo(
+                f"Audited: {result.total_files} files, {result.total_documents} documents"
+            )
+        else:
+            click.echo(f"Audited: {path}")
+            click.echo(
+                f"Files: {result.total_files}, Documents: {result.total_documents}"
+            )
+        click.echo()
+
+        # Calculate correct count
+        correct_count = result.total_files - len(result.orphans) - len(result.relocated)
+
+        # Check if there are any issues
+        total_issues = (
+            len(result.orphans)
+            + len(result.missing)
+            + len(result.relocated)
+            + len(result.duplicates)
+        )
+
+        if total_issues == 0:
+            click.echo("✓ Warehouse is consistent!")
+            click.echo("  All files correctly tracked, no orphans or missing files.")
+            conn.close()
+            sys.exit(0)
+
+        click.echo(f"✓ {correct_count} files correctly tracked")
+        click.echo()
+        click.echo(f"Issues Found: {total_issues}")
+        click.echo("━" * 60)
+
+        # Display orphaned files
+        if result.orphans:
+            click.echo()
+            click.echo(f"Orphaned Files ({len(result.orphans)}):")
+            click.echo("  Files in warehouse but not tracked in database")
+            click.echo()
+            for orphan in result.orphans:
+                size_kb = orphan.size / 1024
+                click.echo(f"  {orphan.path}")
+                click.echo(f"    Hash: {orphan.hash[:16]}...")
+                click.echo(f"    Size: {size_kb:.1f} KB")
+                click.echo("    → Import this file to track it")
+
+        # Display missing files
+        if result.missing:
+            click.echo()
+            click.echo(f"Missing Files ({len(result.missing)}):")
+            click.echo("  Documents in database but files not found on disk")
+            click.echo()
+            for missing in result.missing:
+                click.echo(f"  {missing.path}")
+                click.echo(
+                    f"    Document: {missing.document_id}, Entry: {missing.entry_id}"
+                )
+                click.echo(f"    Hash: {missing.hash[:16]}...")
+                click.echo(
+                    "    → File needs to be restored (restore command coming soon)"
+                )
+
+        # Display relocated files
+        if result.relocated:
+            click.echo()
+            click.echo(f"Relocated Files ({len(result.relocated)}):")
+            click.echo("  Files moved from recorded location")
+            click.echo()
+            for reloc in result.relocated:
+                click.echo(f"  {reloc.actual_path} (expected: {reloc.expected_path})")
+                click.echo(f"    Document: {reloc.document_id}")
+                click.echo(f"    Hash: {reloc.hash[:16]}...")
+                click.echo("    → File moved outside DWH, database not updated")
+                click.echo(
+                    f"    → Restore: mv {reloc.actual_path} {reloc.expected_path}"
+                )
+
+        # Display duplicates
+        if result.duplicates:
+            click.echo()
+            click.echo(
+                f"Duplicates ({len(result.duplicates)} blob(s) in multiple locations):"
+            )
+            click.echo("  Same content in multiple categories")
+            click.echo()
+            for dup in result.duplicates:
+                click.echo(
+                    f"  Hash: {dup.hash[:16]}... ({len(dup.locations)} locations)"
+                )
+                for i, (loc, doc_id) in enumerate(dup.locations, 1):
+                    if doc_id:
+                        click.echo(f"    {i}. {loc} (Document: {doc_id})")
+                    else:
+                        click.echo(f"    {i}. {loc} (orphaned)")
+                click.echo(
+                    "    → Both classifications may be valid (same document in multiple categories)"
+                )
+
+        conn.close()
+
+        # Exit with error code if issues found
+        sys.exit(1)
+
+    except audit_module.AuditError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    except warehouse.WarehouseNotFoundError:
+        click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(2)
+    except Exception as e:
+        click.echo(f"Error during audit: {e}", err=True)
+        sys.exit(2)
+
+
+@main.command()
 @click.pass_context
 def man(ctx):
     """Print the complete manual (auto-generated from commands)."""
