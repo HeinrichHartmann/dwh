@@ -137,66 +137,70 @@ def drop_import(paths, message, warehouse_root, history_dir, conn):
 2. **Database records metadata** (no file duplication)
 3. **History is projection** (optional human-readable view)
 
-### History Directory: Projection vs Content
+### History Directory: Filesystem Projection
 
-**Two approaches for `_history/`:**
-
-#### Option A: Metadata Only (Recommended)
+**History as a derived view:**
 
 ```
 _history/
   001_drop_d_20260329_120000_abc123/
     receipt.json       ← Drop metadata
-    manifest.json      ← List of entries (blob hashes + paths)
+    tree/              ← Filesystem projection (copies from blobs)
+      invoice.pdf      ← Actual file (copied from .dwh/blobs/)
+      file2.txt
   002_classify.json
 ```
 
-**manifest.json:**
-```json
-{
-  "drop_id": "d_20260329_120000_abc123",
-  "entries": [
-    {
-      "entry_id": "e_20260329_120000_abc123_001",
-      "blob_hash": "abc123...",
-      "filename": "invoice.pdf",
-      "relative_path": "invoices/Q1/invoice.pdf",
-      "size": 45234
-    }
-  ]
-}
+**Key principle: `tree/` is a VIEW, not source of truth**
+
+- **Source of truth**: `.dwh/blobs/` (content) + `dwh.db` (metadata)
+- **Filesystem projection**: `_history/tree/` written from blobs
+- **Purpose**: Human inspection, filesystem browsing
+- **Cost**: Storage duplication (expensive but useful)
+- **Regeneration**: Can delete and recreate from blobs anytime
+
+**Import workflow:**
+```python
+def drop_import(paths, ...):
+    # 1. Store blobs (source of truth)
+    for file in files:
+        blob_hash = compute_hash(file)
+        blob_path = get_blob_path(blob_hash, blobs_dir)
+        if not blob_path.exists():
+            shutil.copy2(file, blob_path)  # Store blob
+
+    # 2. Write metadata to database (source of truth)
+    apply_drop_to_db(conn, receipt, entries)
+
+    # 3. Write filesystem projection (derived view)
+    write_history_projection(history_dir, drop_id, entries, blobs_dir)
 ```
 
-**Pros:**
-- No file duplication
-- Compact history
-- Single source of truth (blobs/)
+**Writing projection:**
+```python
+def write_history_projection(history_dir, drop_id, entries, blobs_dir):
+    """Write filesystem projection from blobs."""
+    tree_dir = history_dir / f"XXX_drop_{drop_id}" / "tree"
+    tree_dir.mkdir(parents=True, exist_ok=True)
 
-**Cons:**
-- Can't directly browse drop contents in filesystem
-- Need tool to reconstruct
-
-#### Option B: Symlink Tree (Hybrid)
-
-```
-_history/
-  001_drop_d_20260329_120000_abc123/
-    receipt.json
-    tree/
-      invoice.pdf → ../../../.dwh/blobs/ab/abc123...
-      file2.txt → ../../../.dwh/blobs/cd/cde234...
+    for entry in entries:
+        blob_path = get_blob_path(entry.blob_hash, blobs_dir)
+        dest = tree_dir / entry.relative_path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(blob_path, dest)  # Copy from blob to projection
 ```
 
-**Pros:**
-- Human-browsable
-- Compatible with existing code
-- No content duplication (symlinks)
+**Rationale:**
+- Human browsable (can `ls`, `cat`, `grep` in _history/)
+- Compatible with existing code expectations
+- Can be deleted/regenerated if needed
+- Clear that blobs are source (retrieve from blobs, not _history/)
 
-**Cons:**
-- Symlinks may break if blobs deleted
-- More complex to maintain
-
-**Decision: Start with Option A** (metadata only), add symlink reconstruction as optional feature later.
+**Future optimization:**
+If storage becomes a concern, can switch to:
+- Symlinks instead of copies
+- On-demand projection (only create tree/ when browsing)
+- Manifest-only with `dwh drop show` command
 
 ### Database Schema Compatibility
 
@@ -252,45 +256,83 @@ Only change needed: Implement physical blob storage in `.dwh/blobs/`.
 
 ### Operations Impact
 
+**Key principle: All operations retrieve from BLOBS, not _history/tree/**
+
+The `_history/tree/` projection exists for human browsing only. All programmatic operations must use blob storage as source of truth.
+
 #### Triage Checkout
 
-**Before:**
+**Current (reads _history/tree/):**
 ```python
 # Copy from _history/tree/
 for file in tree_dir.rglob("*"):
     shutil.copy2(file, triage_dir / relative_path)
 ```
 
-**After:**
+**Updated (reads blobs):**
 ```python
-# Reconstruct from blobs
+# Retrieve from blobs via database
+entries = conn.execute(
+    "SELECT * FROM entries WHERE drop_id = ?", (drop_id,)
+).fetchall()
+
 for entry in entries:
-    blob_path = get_blob_path(entry.blob_hash, blobs_dir)
-    dest = triage_dir / entry.relative_path
+    blob_path = get_blob_path(entry['blob_hash'], blobs_dir)
+    dest = triage_dir / entry['relative_path']
+    dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(blob_path, dest)
 ```
 
-**Impact:** Minimal - same copy operation, different source
+**Impact:**
+- Changed data source (blobs instead of _history/tree/)
+- Same performance (same copy operation)
+- More reliable (single source of truth)
 
 #### Drop Export
 
-**Before:**
+**Current (reads _history/tree/):**
 ```python
 # Copy from _history/tree/
 for file in tree_dir.rglob("*"):
     shutil.copy2(file, dest / relative_path)
 ```
 
-**After:**
+**Updated (reads blobs):**
 ```python
-# Reconstruct from blobs using entries
+# Retrieve from blobs via database
+entries = conn.execute(
+    "SELECT * FROM entries WHERE drop_id = ?", (drop_id,)
+).fetchall()
+
 for entry in entries:
-    blob_path = get_blob_path(entry.blob_hash, blobs_dir)
-    dest_path = dest / entry.relative_path
+    blob_path = get_blob_path(entry['blob_hash'], blobs_dir)
+    dest_path = dest / entry['relative_path']
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(blob_path, dest_path)
 ```
 
-**Impact:** Minimal - same copy operation, different source
+**Impact:** Same as triage checkout
+
+#### Drop Rebuild
+
+**Updated:**
+```python
+def rebuild_database(history_dir, db_path):
+    """Rebuild database from history receipts (not tree/)."""
+    # Scan receipts only
+    for item in sorted(history_dir.iterdir()):
+        if item.is_dir() and '_drop_' in item.name:
+            receipt = load_receipt(item / 'receipt.json')
+
+            # Derive entries from tree/ (projection)
+            # OR better: Store entry metadata in receipt/manifest
+            tree_dir = item / 'tree'
+            entries = derive_entries(tree_dir, drop_id)
+
+            apply_drop_to_db(conn, receipt, entries)
+```
+
+**Note:** For full independence from _history/tree/, could store entry metadata in receipt.json or separate manifest.json. Current code derives from tree/ which works but couples to projection.
 
 #### Warehouse Files
 
@@ -298,6 +340,7 @@ for entry in entries:
 - Warehouse files stay as regular files in categories
 - Classification moves/copies from triage to warehouse
 - Blobs provide backup/reconstruction capability
+- Warehouse is the "working tree" for user's classified documents
 
 ### Migration Strategy
 
