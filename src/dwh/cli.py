@@ -440,6 +440,40 @@ def warehouse_add(path: Path, name: str | None):
         click.echo("Selected as active warehouse (first registered)")
 
 
+@warehouse_group.command("remove")
+@click.argument("name")
+def warehouse_remove(name: str):
+    """Remove a warehouse from the registry."""
+    from dwh.global_config import GlobalConfig
+
+    global_config = GlobalConfig.load()
+
+    if name not in global_config.warehouses:
+        click.echo(f"Error: Warehouse '{name}' not found.", err=True)
+        click.echo()
+        click.echo("Available warehouses:")
+        for wh_name in global_config.warehouses.keys():
+            click.echo(f"  {wh_name}")
+        sys.exit(1)
+
+    wh_path = global_config.warehouses[name].path
+    was_selected = global_config.default_warehouse == name
+
+    global_config.remove_warehouse(name)
+    global_config.save()
+
+    click.echo(f"Removed warehouse: {name}")
+    click.echo(f"  Path: {wh_path}")
+
+    if was_selected:
+        click.echo()
+        click.echo("Note: This was the selected warehouse.")
+        if global_config.warehouses:
+            click.echo("Use 'dwh warehouse select <name>' to choose another.")
+        else:
+            click.echo("No warehouses remain in registry.")
+
+
 def _collect_commands(
     cmd: click.Command, prefix: str = "", override_name: str | None = None
 ) -> list[tuple[str, str, list, list]]:
