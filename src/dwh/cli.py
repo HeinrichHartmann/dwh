@@ -5,7 +5,7 @@ from pathlib import Path
 
 import click
 
-from dwh import db, drop, warehouse
+from dwh import db, drop, triage, warehouse
 
 
 @click.group()
@@ -175,6 +175,84 @@ def drop_export_cmd(drop_id: str, destination: Path):
         sys.exit(1)
     except Exception as e:
         click.echo(f"Error exporting drop: {e}", err=True)
+        sys.exit(1)
+
+
+@main.group(invoke_without_command=True)
+@click.pass_context
+@click.argument("drop_id", required=False)
+def triage_group(ctx, drop_id: str | None):
+    """Triage workflow: checkout and organize drops."""
+    # If no subcommand, do checkout
+    if ctx.invoked_subcommand is None:
+        try:
+            wh = warehouse.find_warehouse()
+            conn = wh.connect()
+
+            d = triage.triage_checkout(
+                drop_id,
+                wh.root,
+                wh.history_dir,
+                wh.triage_dir,
+                conn
+            )
+
+            click.echo(f"Checked out drop {d.id} to triage/")
+            click.echo(f"{len(d.entries)} files ready for triage")
+
+            conn.close()
+
+        except triage.TriageError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        except warehouse.WarehouseNotFoundError:
+            click.echo("Error: Not in a warehouse.", err=True)
+            sys.exit(1)
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+
+
+# Rename to 'triage' for CLI
+triage_group.name = "triage"
+
+
+@triage_group.command("sync")
+def triage_sync_cmd():
+    """Finalize triage and create classifications."""
+    try:
+        wh = warehouse.find_warehouse()
+        conn = wh.connect()
+
+        result = triage.triage_sync(
+            wh.root,
+            wh.triage_dir,
+            wh.documents_dir,
+            wh.history_dir,
+            conn
+        )
+
+        if result["classified"] > 0:
+            click.echo(f"✓ Classified {result['classified']} files")
+
+        if result["skipped"] > 0:
+            click.echo(f"⚠ Skipped {result['skipped']} files still in triage/")
+
+        if result["ambiguous"]:
+            click.echo(f"⚠ Ambiguous files (skipped):")
+            for path in result["ambiguous"]:
+                click.echo(f"  - {path}")
+
+        conn.close()
+
+    except triage.NoTriageInProgressError:
+        click.echo("Error: No triage in progress.", err=True)
+        sys.exit(1)
+    except warehouse.WarehouseNotFoundError:
+        click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
 

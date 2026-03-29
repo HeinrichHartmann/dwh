@@ -35,8 +35,24 @@ CREATE TABLE entries (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entry_id TEXT NOT NULL UNIQUE REFERENCES entries(id),
+    name TEXT NOT NULL,
+    category TEXT NOT NULL DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE triage_state (
+    id INTEGER PRIMARY KEY CHECK(id = 1),
+    drop_id TEXT NOT NULL,
+    checked_out_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX idx_entries_drop_id ON entries(drop_id);
 CREATE INDEX idx_entries_blob_hash ON entries(blob_hash);
+CREATE INDEX idx_documents_entry_id ON documents(entry_id);
+CREATE INDEX idx_documents_category ON documents(category);
 """
 
 
