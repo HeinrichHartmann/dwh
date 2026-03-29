@@ -126,6 +126,11 @@ def drop_import_cmd(message: str, paths: tuple[Path, ...]):
         click.echo(f"Imported {len(result.entries)} files")
         click.echo(f"Drop ID: {result.id}")
 
+        if result.auto_classified_count > 0:
+            click.echo(
+                f"✓ Auto-classified {result.auto_classified_count} files (already organized)"
+            )
+
         conn.close()
 
     except warehouse.WarehouseNotFoundError:
@@ -359,6 +364,116 @@ def warehouse_select(name: str):
     wh_path = global_config.warehouses[name].path
     click.echo(f"Selected warehouse: {name}")
     click.echo(f"  Path: {wh_path}")
+
+
+def _collect_commands(
+    cmd: click.Command, prefix: str = "", override_name: str | None = None
+) -> list[tuple[str, str, list, list]]:
+    """Collect all commands as (full_name, help, arguments, options) tuples."""
+    results = []
+    # Use override_name if provided (for renamed commands), otherwise use cmd.name
+    cmd_name = override_name if override_name else cmd.name
+    name = f"{prefix} {cmd_name}".strip() if prefix else cmd_name
+
+    if isinstance(cmd, click.Group):
+        for subcmd_name in sorted(cmd.list_commands(None)):
+            subcmd = cmd.get_command(None, subcmd_name)
+            if subcmd:
+                # Pass subcmd_name as override to preserve registered names
+                results.extend(_collect_commands(subcmd, name, subcmd_name))
+    else:
+        # Get first line of help only
+        help_text = (cmd.help or "").split("\n")[0]
+        arguments = []
+        options = []
+        for param in cmd.params:
+            if isinstance(param, click.Argument):
+                arg_name = param.name.upper()
+                # Show default if present
+                if param.default is not None:
+                    arguments.append(f"[{arg_name}]")
+                elif param.required:
+                    arguments.append(arg_name)
+                else:
+                    arguments.append(f"[{arg_name}]")
+            elif isinstance(param, click.Option) and param.help:
+                opts = ", ".join(param.opts)
+                options.append((opts, param.help))
+        results.append((name, help_text, arguments, options))
+
+    return results
+
+
+@main.command()
+@click.pass_context
+def man(ctx):
+    """Print the complete manual (auto-generated from commands)."""
+    root = ctx.find_root().command
+
+    lines = ["DWH(1)", "", "NAME", "    dwh - Document Warehouse", ""]
+
+    # Group commands by top-level
+    groups: dict[str, list] = {}
+    for cmd_name in sorted(root.list_commands(ctx)):
+        if cmd_name == "man":
+            continue
+        cmd = root.get_command(ctx, cmd_name)
+        if cmd:
+            # Pass cmd_name to preserve registered names (e.g., "drop" not "drop_cmd")
+            commands = _collect_commands(cmd, override_name=cmd_name)
+            if commands:
+                groups[cmd_name] = commands
+
+    lines.append("COMMANDS")
+
+    for group_name, commands in groups.items():
+        lines.append(f"\n  {group_name}:")
+        for full_name, help_text, arguments, options in commands:
+            # Show command with positional arguments
+            args_str = " ".join(arguments)
+            if args_str:
+                lines.append(f"    dwh {full_name} {args_str}")
+            else:
+                lines.append(f"    dwh {full_name}")
+            if help_text:
+                lines.append(f"        {help_text}")
+            for opt, opt_help in options:
+                lines.append(f"        {opt}: {opt_help}")
+
+    lines.extend(
+        [
+            "",
+            "WAREHOUSE STRUCTURE",
+            "    .dwh/                Hidden metadata directory",
+            "        config.toml      Warehouse configuration",
+            "        dwh.db           SQLite database (cache, can be rebuilt)",
+            "",
+            "    _history/            Event log (source of truth, backup required)",
+            "        NNN_drop_*/      Drop directories (content-addressed storage)",
+            "            receipt.json Drop metadata (actor, timestamp, message)",
+            "            tree/        Original file structure (content-addressed)",
+            "        NNN_classify.json Classification records",
+            "",
+            "    _triage/             Working directory (ephemeral)",
+            "        Files staged for classification",
+            "",
+            "    <category>/          User-defined categories at warehouse root",
+            "        Documents organized by category",
+            "",
+            "CONCEPTS",
+            "    Drop        An import event with full provenance tracking",
+            "    Entry       A file within a drop (content-addressed by SHA-256)",
+            "    Blob        Deduplicated file content storage",
+            "    Triage      Workflow for classifying imported files",
+            "    Category    User-defined organizational structure",
+            "    Rebuild     Reconstruct database from history (disaster recovery)",
+            "",
+            "SEE ALSO",
+            "    dwh <command> --help",
+        ]
+    )
+
+    click.echo("\n".join(lines))
 
 
 if __name__ == "__main__":

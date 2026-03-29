@@ -45,6 +45,7 @@ class Drop:
     actor: str
     created_at: str
     entries: list[Entry]
+    auto_classified_count: int = 0
 
 
 @dataclass
@@ -273,6 +274,93 @@ def compute_relative_path(file_path: Path, input_paths: list[Path]) -> Path:
     return Path(file_path.name)
 
 
+def is_in_tree_path(file_path: Path, warehouse_root: Path) -> bool:
+    """Check if file path is within warehouse (excluding system dirs).
+
+    Returns True if:
+    - Path is within warehouse_root
+    - Path is NOT in system directories (.dwh, _history, _triage)
+    """
+    try:
+        resolved_file = file_path.resolve()
+        resolved_root = warehouse_root.resolve()
+
+        # Check if file is within warehouse
+        rel_path = resolved_file.relative_to(resolved_root)
+
+        # System directories that are not allowed for import
+        system_dirs = {".dwh", "_history", "_triage"}
+
+        # Check if first component is a system directory
+        first_part = rel_path.parts[0] if rel_path.parts else ""
+        return first_part not in system_dirs
+
+    except ValueError:
+        # Not within warehouse_root
+        return False
+
+
+def create_classifications(
+    entry_map: dict[str, tuple[Entry, Path, str]],
+    history_dir: Path,
+    conn: sqlite3.Connection,
+    message: str = "Auto-classify",
+) -> int:
+    """Create classification records for entries.
+
+    Args:
+        entry_map: Map of entry_id -> (entry, file_path, category)
+        history_dir: History directory path
+        conn: Database connection
+        message: Classification message
+
+    Returns:
+        Number of classifications created
+    """
+    from dwh.history import get_next_history_number
+
+    if not entry_map:
+        return 0
+
+    seq_num = get_next_history_number(history_dir)
+    classify_file = history_dir / f"{seq_num:03d}_classify.json"
+
+    classifications = []
+    for entry_id, (entry, file_path, category) in entry_map.items():
+        # Insert document record
+        cursor = conn.execute(
+            """INSERT INTO documents (entry_id, name, category)
+               VALUES (?, ?, ?)""",
+            (entry_id, file_path.name, category),
+        )
+        document_id = cursor.lastrowid
+
+        classifications.append(
+            {
+                "entry_id": entry_id,
+                "document_id": document_id,
+                "category": category,
+                "name": file_path.name,
+            }
+        )
+
+    # Write classification record
+    classification_record = {
+        "type": "classify",
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "actor": getpass.getuser(),
+        "message": message,
+        "classifications": classifications,
+    }
+
+    with open(classify_file, "w") as f:
+        json.dump(classification_record, f, indent=2)
+
+    conn.commit()
+
+    return len(classifications)
+
+
 def drop_import(
     paths: list[Path],
     message: str,
@@ -280,7 +368,11 @@ def drop_import(
     history_dir: Path,
     conn: sqlite3.Connection,
 ) -> Drop:
-    """Import files and create a drop in history."""
+    """Import files and create a drop in history.
+
+    Auto-classifies files that are imported from within the warehouse
+    (excluding system directories).
+    """
     from dwh.history import get_next_history_number
 
     # Generate drop ID and metadata
@@ -293,8 +385,30 @@ def drop_import(
     tree_dir = drop_dir / "tree"
     tree_dir.mkdir(parents=True)
 
+    # Track in-tree files for auto-classification
+    # Map: file_path -> (category, relative_path_in_tree)
+    in_tree_files: dict[Path, tuple[str, Path]] = {}
+
     # Expand and copy files to tree/, preserving structure
     for file_path in expand_paths(paths):
+        # Check if this file is in-tree (within warehouse, not in system dirs)
+        if is_in_tree_path(file_path, warehouse_root):
+            # Compute category from file's location in warehouse
+            resolved_file = file_path.resolve()
+            resolved_root = warehouse_root.resolve()
+            rel_to_warehouse = resolved_file.relative_to(resolved_root)
+
+            # Category is the parent directory path (or empty if at root)
+            category = (
+                str(rel_to_warehouse.parent)
+                if rel_to_warehouse.parent != Path(".")
+                else ""
+            )
+
+            # Store for later classification
+            relative_path = compute_relative_path(file_path, paths)
+            in_tree_files[file_path] = (category, relative_path)
+
         relative_path = compute_relative_path(file_path, paths)
         dest = tree_dir / relative_path
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -308,12 +422,33 @@ def drop_import(
     entries = derive_entries(tree_dir, drop_id)
     apply_drop_to_db(conn, receipt, entries)
 
+    # Auto-classify in-tree files
+    auto_classified_count = 0
+    if in_tree_files:
+        # Build map of entry_id -> (entry, file_path, category)
+        # Match entries by their relative path in tree
+        entry_map: dict[str, tuple[Entry, Path, str]] = {}
+
+        for entry in entries:
+            # Check if this entry corresponds to an in-tree file
+            entry_tree_path = Path(entry.relative_path)
+            for file_path, (category, tree_rel_path) in in_tree_files.items():
+                if entry_tree_path == tree_rel_path:
+                    entry_map[entry.id] = (entry, file_path, category)
+                    break
+
+        # Create classifications
+        auto_classified_count = create_classifications(
+            entry_map, history_dir, conn, message="Auto-classify (in-tree import)"
+        )
+
     return Drop(
         id=drop_id,
         message=message,
         actor=actor,
         created_at=receipt["created_at"],
         entries=entries,
+        auto_classified_count=auto_classified_count,
     )
 
 
