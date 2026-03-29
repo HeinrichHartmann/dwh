@@ -98,6 +98,11 @@ def drop_import_cmd(message: str, paths: tuple[Path, ...]):
         click.echo(f"Imported {len(result.entries)} files")
         click.echo(f"Drop ID: {result.id}")
 
+        if result.auto_classified_count > 0:
+            click.echo(
+                f"✓ Auto-classified {result.auto_classified_count} files (already organized)"
+            )
+
         conn.close()
 
     except warehouse.WarehouseNotFoundError:

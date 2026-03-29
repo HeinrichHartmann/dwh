@@ -184,8 +184,9 @@ class TestImportMultiplePaths:
 
         # Verify both appear in tree
         history_dir = tmp_warehouse / "_history"
-        drop_dir = list(history_dir.iterdir())[0]
-        tree_dir = drop_dir / "tree"
+        drop_dirs = [d for d in history_dir.iterdir() if d.is_dir() and "_drop_" in d.name]
+        assert len(drop_dirs) == 1
+        tree_dir = drop_dirs[0] / "tree"
 
         assert (tree_dir / "single.txt").exists()
         assert (tree_dir / "nested.txt").exists()
@@ -577,3 +578,135 @@ class TestErrorHandling:
 
         assert result.exit_code != 0
         assert "warehouse" in result.output.lower()
+
+
+class TestAutoClassification:
+    """Test auto-classification for in-tree imports (ADR-003)."""
+
+    def test_import_from_category_auto_classifies(self, runner, tmp_warehouse):
+        """Import from within warehouse auto-classifies files."""
+        import sqlite3
+
+        # Create a file in a category within warehouse
+        finance_dir = tmp_warehouse / "finance"
+        finance_dir.mkdir(parents=True)
+        invoice = finance_dir / "invoice.pdf"
+        invoice.write_text("Invoice content")
+
+        # Import the in-tree file
+        result = run_cli(runner, ["drop", "import", "-m", "Tax docs", str(invoice)])
+
+        assert result.exit_code == 0
+        assert "Imported 1 files" in result.output
+        assert "Auto-classified 1 files" in result.output
+
+        # Verify document is in database
+        db_path = tmp_warehouse / ".dwh" / "dwh.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        documents = conn.execute("SELECT * FROM documents").fetchall()
+        assert len(documents) == 1
+        assert documents[0]["name"] == "invoice.pdf"
+        assert documents[0]["category"] == "finance"
+
+        conn.close()
+
+    def test_import_nested_category_auto_classifies(self, runner, tmp_warehouse):
+        """Import from nested category preserves full path."""
+        import sqlite3
+
+        # Create nested category structure
+        cat_dir = tmp_warehouse / "finance" / "taxes" / "2024"
+        cat_dir.mkdir(parents=True)
+        doc = cat_dir / "return.pdf"
+        doc.write_text("Tax return")
+
+        # Import
+        result = run_cli(runner, ["drop", "import", "-m", "Taxes", str(doc)])
+
+        assert result.exit_code == 0
+        assert "Auto-classified 1 files" in result.output
+
+        # Verify category includes full path
+        db_path = tmp_warehouse / ".dwh" / "dwh.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+
+        documents = conn.execute("SELECT * FROM documents").fetchall()
+        assert len(documents) == 1
+        assert documents[0]["category"] == "finance/taxes/2024"
+
+        conn.close()
+
+    def test_mixed_import_auto_classifies_only_in_tree(
+        self, runner, tmp_warehouse, tmp_path
+    ):
+        """Mixed import: auto-classify in-tree, leave external for triage."""
+        import sqlite3
+
+        # In-tree file
+        finance_dir = tmp_warehouse / "finance"
+        finance_dir.mkdir(parents=True)
+        invoice = finance_dir / "invoice.pdf"
+        invoice.write_text("Invoice")
+
+        # External file
+        external = tmp_path.parent / "receipt.pdf"
+        external.write_text("Receipt")
+
+        # Import both
+        result = run_cli(
+            runner, ["drop", "import", "-m", "Mixed", str(invoice), str(external)]
+        )
+
+        assert result.exit_code == 0
+        assert "Imported 2 files" in result.output
+        assert "Auto-classified 1 files" in result.output
+
+        # Verify only one document (the in-tree file)
+        db_path = tmp_warehouse / ".dwh" / "dwh.db"
+        conn = sqlite3.connect(db_path)
+        documents = conn.execute("SELECT * FROM documents").fetchall()
+        assert len(documents) == 1
+        assert documents[0][2] == "invoice.pdf"  # name column
+        conn.close()
+
+    def test_import_from_system_dir_rejected(self, runner, tmp_warehouse):
+        """Import from system directories should fail."""
+        # Create file in _history (system directory)
+        history_file = tmp_warehouse / "_history" / "bad.txt"
+        history_file.write_text("Bad")
+
+        result = run_cli(runner, ["drop", "import", "-m", "Bad", str(history_file)])
+
+        # Should succeed but not auto-classify (system dirs excluded)
+        assert result.exit_code == 0
+        assert "Auto-classified" not in result.output
+
+    def test_classification_record_created(self, runner, tmp_warehouse):
+        """Auto-classification creates history record."""
+        # Create in-tree file
+        docs_dir = tmp_warehouse / "docs"
+        docs_dir.mkdir(parents=True)
+        doc = docs_dir / "memo.txt"
+        doc.write_text("Memo")
+
+        # Import
+        run_cli(runner, ["drop", "import", "-m", "Docs", str(doc)])
+
+        # Check classification record exists
+        history_dir = tmp_warehouse / "_history"
+        classify_files = list(history_dir.glob("*_classify.json"))
+
+        assert len(classify_files) == 1
+
+        # Verify content
+        classify_record = json.loads(classify_files[0].read_text())
+        assert classify_record["type"] == "classify"
+        assert classify_record["message"] == "Auto-classify (in-tree import)"
+        assert len(classify_record["classifications"]) == 1
+
+        classification = classify_record["classifications"][0]
+        assert classification["category"] == "docs"
+        assert classification["name"] == "memo.txt"
