@@ -84,20 +84,16 @@ drop_cmd.name = "drop"
 
 @drop_cmd.command("import")
 @click.option("-m", "--message", required=True, help="Import message (required)")
-@click.argument("paths", nargs=-1, type=click.Path(exists=True, path_type=Path), required=True)
+@click.argument(
+    "paths", nargs=-1, type=click.Path(exists=True, path_type=Path), required=True
+)
 def drop_import_cmd(message: str, paths: tuple[Path, ...]):
     """Import files into the warehouse."""
     try:
         wh = warehouse.find_warehouse()
         conn = wh.connect()
 
-        result = drop.drop_import(
-            list(paths),
-            message,
-            wh.root,
-            wh.history_dir,
-            conn
-        )
+        result = drop.drop_import(list(paths), message, wh.root, wh.history_dir, conn)
 
         click.echo(f"Imported {len(result.entries)} files")
         click.echo(f"Drop ID: {result.id}")
@@ -166,7 +162,9 @@ def drop_inspect_cmd(drop_id: str):
 
         for e in d.entries:
             size_kb = e.size / 1024
-            click.echo(f"  {e.id}  {e.filename:<30} {e.relative_path:<40} {size_kb:>8.1f} KB")
+            click.echo(
+                f"  {e.id}  {e.filename:<30} {e.relative_path:<40} {size_kb:>8.1f} KB"
+            )
 
         conn.close()
 
@@ -222,11 +220,7 @@ def triage_checkout(drop_id: str | None):
         conn = wh.connect()
 
         d = triage.triage_checkout(
-            drop_id,
-            wh.root,
-            wh.history_dir,
-            wh.triage_dir,
-            conn
+            drop_id, wh.root, wh.history_dir, wh.triage_dir, conn
         )
 
         click.echo(f"Checked out drop {d.id} to triage/")
@@ -252,12 +246,7 @@ def triage_sync_cmd():
         wh = warehouse.find_warehouse()
         conn = wh.connect()
 
-        result = triage.triage_sync(
-            wh.root,
-            wh.triage_dir,
-            wh.history_dir,
-            conn
-        )
+        result = triage.triage_sync(wh.root, wh.triage_dir, wh.history_dir, conn)
 
         if result["classified"] > 0:
             click.echo(f"✓ Classified {result['classified']} files")

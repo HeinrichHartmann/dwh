@@ -8,11 +8,13 @@ from dwh import db
 
 class WarehouseError(Exception):
     """Base exception for warehouse errors."""
+
     pass
 
 
 class WarehouseExistsError(WarehouseError):
     """Warehouse already exists at path."""
+
     def __init__(self, path: Path):
         super().__init__(f"Warehouse already exists at {path}")
         self.path = path
@@ -20,6 +22,7 @@ class WarehouseExistsError(WarehouseError):
 
 class WarehouseNotFoundError(WarehouseError):
     """Warehouse not found at path."""
+
     def __init__(self, path: Path):
         super().__init__(f"Warehouse not found at {path}")
         self.path = path
@@ -52,7 +55,9 @@ class Warehouse:
         return db.connect(self.db_path)
 
 
-def find_warehouse(start_path: Path | None = None, require_db: bool = True) -> Warehouse:
+def find_warehouse(
+    start_path: Path | None = None, require_db: bool = True
+) -> Warehouse:
     """Find warehouse by walking up from start_path.
 
     Args:

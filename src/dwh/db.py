@@ -66,7 +66,9 @@ def init_db(db_path: Path) -> None:
         conn.executescript(SCHEMA_SQL)
 
         # Set schema version
-        conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
+        )
 
         conn.commit()
     finally:

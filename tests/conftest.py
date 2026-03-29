@@ -79,6 +79,7 @@ def empty_dir(tmp_path):
 
 # Test helpers
 
+
 def run_cli(runner: CliRunner, args: list[str]) -> Any:
     """Run dwh CLI and return result."""
     return runner.invoke(main, args)

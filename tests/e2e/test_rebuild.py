@@ -41,7 +41,9 @@ class TestRebuild:
         assert drops["message"] == "Test"
 
         # Verify entries are in database
-        entries = conn.execute("SELECT * FROM entries WHERE drop_id = ?", (drop_id,)).fetchall()
+        entries = conn.execute(
+            "SELECT * FROM entries WHERE drop_id = ?", (drop_id,)
+        ).fetchall()
         assert len(entries) == 4
 
         conn.close()
@@ -96,7 +98,7 @@ class TestRebuild:
 
         original_size = conn.execute(
             "SELECT size FROM blobs WHERE hash IN (SELECT blob_hash FROM entries WHERE drop_id = ?)",
-            (drop_id,)
+            (drop_id,),
         ).fetchone()["size"]
 
         conn.close()
@@ -111,7 +113,7 @@ class TestRebuild:
 
         rebuilt_size = conn.execute(
             "SELECT size FROM blobs WHERE hash IN (SELECT blob_hash FROM entries WHERE drop_id = ?)",
-            (drop_id,)
+            (drop_id,),
         ).fetchone()["size"]
 
         assert rebuilt_size == original_size
@@ -150,8 +152,7 @@ class TestRebuild:
     def test_rebuild_idempotent(self, runner, tmp_warehouse, sample_files):
         """Rebuilding multiple times produces same result."""
         # Import files
-        result = run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
-        drop_id = extract_drop_id(result.output)
+        run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
 
         # Rebuild twice
         db_path = tmp_warehouse / ".dwh" / "dwh.db"

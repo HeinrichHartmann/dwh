@@ -25,7 +25,9 @@ class TestImportSingleFile:
 
     def test_import_single_file_succeeds(self, runner, tmp_warehouse, single_file):
         """Import a single file and verify it appears in history."""
-        result = run_cli(runner, ["drop", "import", "-m", "Single file test", str(single_file)])
+        result = run_cli(
+            runner, ["drop", "import", "-m", "Single file test", str(single_file)]
+        )
 
         assert result.exit_code == 0
         assert "Imported 1 files" in result.output
@@ -34,7 +36,9 @@ class TestImportSingleFile:
         drop_id = extract_drop_id(result.output)
         assert drop_id.startswith("d_")
 
-    def test_import_single_file_creates_history(self, runner, tmp_warehouse, single_file):
+    def test_import_single_file_creates_history(
+        self, runner, tmp_warehouse, single_file
+    ):
         """Verify history folder structure is created."""
         result = run_cli(runner, ["drop", "import", "-m", "Test", str(single_file)])
         assert result.exit_code == 0
@@ -46,9 +50,13 @@ class TestImportSingleFile:
         assert history_items[0].is_dir()
         assert history_items[0].name.startswith("001_drop_")
 
-    def test_import_single_file_creates_receipt(self, runner, tmp_warehouse, single_file):
+    def test_import_single_file_creates_receipt(
+        self, runner, tmp_warehouse, single_file
+    ):
         """Verify receipt is created with correct metadata."""
-        result = run_cli(runner, ["drop", "import", "-m", "Important doc", str(single_file)])
+        result = run_cli(
+            runner, ["drop", "import", "-m", "Important doc", str(single_file)]
+        )
         drop_id = extract_drop_id(result.output)
 
         history_dir = tmp_warehouse / "_history"
@@ -64,7 +72,9 @@ class TestImportSingleFile:
         assert "actor" in receipt
         assert "created_at" in receipt
 
-    def test_import_single_file_preserves_content(self, runner, tmp_warehouse, single_file):
+    def test_import_single_file_preserves_content(
+        self, runner, tmp_warehouse, single_file
+    ):
         """Verify imported file has identical content."""
         original_content = single_file.read_bytes()
 
@@ -92,13 +102,17 @@ class TestImportDirectory:
 
     def test_import_directory_counts_files(self, runner, tmp_warehouse, sample_files):
         """Verify all files in directory are counted."""
-        result = run_cli(runner, ["drop", "import", "-m", "Dir test", str(sample_files)])
+        result = run_cli(
+            runner, ["drop", "import", "-m", "Dir test", str(sample_files)]
+        )
 
         assert result.exit_code == 0
         # sample_files has: file1.txt, file2.txt, subdir/nested.txt, subdir/deeper/deep.txt
         assert "Imported 4 files" in result.output
 
-    def test_import_directory_preserves_structure(self, runner, tmp_warehouse, sample_files):
+    def test_import_directory_preserves_structure(
+        self, runner, tmp_warehouse, sample_files
+    ):
         """Verify directory structure is preserved in tree/."""
         result = run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
         assert result.exit_code == 0
@@ -113,7 +127,9 @@ class TestImportDirectory:
         assert (tree_dir / "subdir" / "nested.txt").exists()
         assert (tree_dir / "subdir" / "deeper" / "deep.txt").exists()
 
-    def test_import_directory_preserves_content(self, runner, tmp_warehouse, sample_files):
+    def test_import_directory_preserves_content(
+        self, runner, tmp_warehouse, sample_files
+    ):
         """Verify all file contents match original."""
         result = run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
         assert result.exit_code == 0
@@ -143,7 +159,9 @@ class TestImportMultiplePaths:
         file1.write_text("File A")
         file2.write_text("File B")
 
-        result = run_cli(runner, ["drop", "import", "-m", "Multi", str(file1), str(file2)])
+        result = run_cli(
+            runner, ["drop", "import", "-m", "Multi", str(file1), str(file2)]
+        )
 
         assert result.exit_code == 0
         assert "Imported 2 files" in result.output
@@ -157,7 +175,9 @@ class TestImportMultiplePaths:
         dir1.mkdir()
         (dir1 / "nested.txt").write_text("Nested")
 
-        result = run_cli(runner, ["drop", "import", "-m", "Mixed", str(file1), str(dir1)])
+        result = run_cli(
+            runner, ["drop", "import", "-m", "Mixed", str(file1), str(dir1)]
+        )
 
         assert result.exit_code == 0
         assert "Imported 2 files" in result.output
@@ -222,7 +242,9 @@ class TestDropInspect:
 
     def test_inspect_shows_metadata(self, runner, tmp_warehouse, single_file):
         """Inspect should show drop metadata."""
-        result = run_cli(runner, ["drop", "import", "-m", "Inspect test", str(single_file)])
+        result = run_cli(
+            runner, ["drop", "import", "-m", "Inspect test", str(single_file)]
+        )
         drop_id = extract_drop_id(result.output)
 
         result = run_cli(runner, ["drop", "inspect", drop_id])
@@ -322,7 +344,9 @@ class TestDropExport:
     def test_export_nonexistent_drop_fails(self, runner, tmp_warehouse):
         """Export with invalid drop_id should fail."""
         export_dir = tmp_warehouse / "exported"
-        result = run_cli(runner, ["drop", "export", "d_99999999_999999_deadbeef", str(export_dir)])
+        result = run_cli(
+            runner, ["drop", "export", "d_99999999_999999_deadbeef", str(export_dir)]
+        )
 
         assert result.exit_code != 0
         assert "not found" in result.output.lower() or "error" in result.output.lower()
@@ -339,7 +363,9 @@ class TestImportExportRoundtrip:
         original_content = single_file.read_bytes()
 
         # Import
-        result = run_cli(runner, ["drop", "import", "-m", "Roundtrip", str(single_file)])
+        result = run_cli(
+            runner, ["drop", "import", "-m", "Roundtrip", str(single_file)]
+        )
         drop_id = extract_drop_id(result.output)
 
         # Export
@@ -353,7 +379,9 @@ class TestImportExportRoundtrip:
     def test_roundtrip_directory(self, runner, tmp_warehouse, sample_files):
         """Import and export directory produces identical structure and content."""
         # Import
-        result = run_cli(runner, ["drop", "import", "-m", "Roundtrip", str(sample_files)])
+        result = run_cli(
+            runner, ["drop", "import", "-m", "Roundtrip", str(sample_files)]
+        )
         drop_id = extract_drop_id(result.output)
 
         # Export
@@ -361,7 +389,9 @@ class TestImportExportRoundtrip:
         run_cli(runner, ["drop", "export", drop_id, str(export_dir)])
 
         # Verify structure and content match
-        assert_files_match(sample_files, export_dir, "Roundtrip failed: files don't match")
+        assert_files_match(
+            sample_files, export_dir, "Roundtrip failed: files don't match"
+        )
 
     def test_roundtrip_preserves_file_hashes(self, runner, tmp_warehouse, sample_files):
         """Import and export preserves file hashes (bit-for-bit identical)."""
@@ -373,7 +403,9 @@ class TestImportExportRoundtrip:
                 original_hashes[str(rel_path)] = compute_file_hash(file)
 
         # Import and export
-        result = run_cli(runner, ["drop", "import", "-m", "Hash test", str(sample_files)])
+        result = run_cli(
+            runner, ["drop", "import", "-m", "Hash test", str(sample_files)]
+        )
         drop_id = extract_drop_id(result.output)
 
         export_dir = tmp_warehouse / "restored"
@@ -416,7 +448,9 @@ class TestProvenanceAndReceipts:
 
     def test_receipt_contains_required_fields(self, runner, tmp_warehouse, single_file):
         """Receipt must contain all required provenance fields."""
-        result = run_cli(runner, ["drop", "import", "-m", "Provenance test", str(single_file)])
+        result = run_cli(
+            runner, ["drop", "import", "-m", "Provenance test", str(single_file)]
+        )
         drop_id = extract_drop_id(result.output)
 
         # Find and read receipt
@@ -434,7 +468,7 @@ class TestProvenanceAndReceipts:
     def test_receipt_message_is_preserved(self, runner, tmp_warehouse, single_file):
         """The -m message should be stored exactly in receipt."""
         message = "Very important tax documents from 2024"
-        result = run_cli(runner, ["drop", "import", "-m", message, str(single_file)])
+        run_cli(runner, ["drop", "import", "-m", message, str(single_file)])
 
         history_dir = tmp_warehouse / "_history"
         drop_dir = list(history_dir.iterdir())[0]
@@ -474,7 +508,9 @@ class TestDeduplication:
     but we focus on observable outcomes where possible.
     """
 
-    def test_import_same_file_twice_creates_two_drops(self, runner, tmp_warehouse, single_file):
+    def test_import_same_file_twice_creates_two_drops(
+        self, runner, tmp_warehouse, single_file
+    ):
         """Importing same file twice should create two separate drops."""
         run_cli(runner, ["drop", "import", "-m", "First", str(single_file)])
         run_cli(runner, ["drop", "import", "-m", "Second", str(single_file)])
@@ -483,7 +519,9 @@ class TestDeduplication:
 
         assert result.output.count("d_") >= 2  # At least two drop IDs
 
-    def test_import_same_file_twice_both_exportable(self, runner, tmp_warehouse, single_file):
+    def test_import_same_file_twice_both_exportable(
+        self, runner, tmp_warehouse, single_file
+    ):
         """Both drops of same file should be independently exportable."""
         result1 = run_cli(runner, ["drop", "import", "-m", "First", str(single_file)])
         drop_id1 = extract_drop_id(result1.output)
@@ -509,7 +547,9 @@ class TestErrorHandling:
 
     def test_import_nonexistent_file_fails(self, runner, tmp_warehouse):
         """Import should fail gracefully for missing files."""
-        result = run_cli(runner, ["drop", "import", "-m", "Test", "/nonexistent/file.txt"])
+        result = run_cli(
+            runner, ["drop", "import", "-m", "Test", "/nonexistent/file.txt"]
+        )
 
         assert result.exit_code != 0
 

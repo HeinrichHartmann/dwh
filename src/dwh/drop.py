@@ -12,11 +12,13 @@ from pathlib import Path
 
 class DropError(Exception):
     """Base exception for drop operations."""
+
     pass
 
 
 class DropNotFoundError(DropError):
     """Drop not found."""
+
     def __init__(self, drop_id: str):
         super().__init__(f"Drop not found: {drop_id}")
         self.drop_id = drop_id
@@ -25,6 +27,7 @@ class DropNotFoundError(DropError):
 @dataclass
 class Entry:
     """File entry within a drop."""
+
     id: str
     drop_id: str
     blob_hash: str
@@ -36,6 +39,7 @@ class Entry:
 @dataclass
 class Drop:
     """Drop record."""
+
     id: str
     message: str
     actor: str
@@ -46,6 +50,7 @@ class Drop:
 @dataclass
 class DropSummary:
     """Drop summary for listing."""
+
     id: str
     message: str
     actor: str
@@ -118,23 +123,32 @@ def derive_entries(tree_dir: Path, drop_id: str) -> list[Entry]:
     for file in sorted(tree_dir.rglob("*")):
         if file.is_file():
             relative_path = file.relative_to(tree_dir)
-            entries.append(Entry(
-                id=generate_entry_id(drop_id, relative_path),
-                drop_id=drop_id,
-                filename=file.name,
-                relative_path=str(relative_path),
-                blob_hash=compute_hash(file),
-                size=file.stat().st_size,
-            ))
+            entries.append(
+                Entry(
+                    id=generate_entry_id(drop_id, relative_path),
+                    drop_id=drop_id,
+                    filename=file.name,
+                    relative_path=str(relative_path),
+                    blob_hash=compute_hash(file),
+                    size=file.stat().st_size,
+                )
+            )
     return entries
 
 
-def apply_drop_to_db(conn: sqlite3.Connection, receipt: dict, entries: list[Entry]) -> None:
+def apply_drop_to_db(
+    conn: sqlite3.Connection, receipt: dict, entries: list[Entry]
+) -> None:
     """Apply drop to database."""
     # Insert drop record
     conn.execute(
         "INSERT INTO drops (id, message, actor, created_at) VALUES (?, ?, ?, ?)",
-        (receipt["drop_id"], receipt["message"], receipt["actor"], receipt["created_at"])
+        (
+            receipt["drop_id"],
+            receipt["message"],
+            receipt["actor"],
+            receipt["created_at"],
+        ),
     )
 
     # Insert blob and entry records
@@ -142,15 +156,21 @@ def apply_drop_to_db(conn: sqlite3.Connection, receipt: dict, entries: list[Entr
         # Insert or ignore blob (deduplication)
         conn.execute(
             "INSERT OR IGNORE INTO blobs (hash, size) VALUES (?, ?)",
-            (entry.blob_hash, entry.size)
+            (entry.blob_hash, entry.size),
         )
 
         # Insert entry
         conn.execute(
             """INSERT INTO entries (id, drop_id, blob_hash, filename, relative_path, source_path)
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (entry.id, entry.drop_id, entry.blob_hash, entry.filename,
-             entry.relative_path, "")
+            (
+                entry.id,
+                entry.drop_id,
+                entry.blob_hash,
+                entry.filename,
+                entry.relative_path,
+                "",
+            ),
         )
 
     conn.commit()
@@ -163,7 +183,11 @@ def apply_classification_to_db(conn: sqlite3.Connection, record: dict) -> None:
         conn.execute(
             """INSERT OR IGNORE INTO documents (entry_id, name, category)
                VALUES (?, ?, ?)""",
-            (classification["entry_id"], classification["name"], classification["category"])
+            (
+                classification["entry_id"],
+                classification["name"],
+                classification["category"],
+            ),
         )
     conn.commit()
 
@@ -220,10 +244,7 @@ def rebuild_database(history_dir: Path, db_path: Path) -> dict:
 
     conn.close()
 
-    return {
-        "drops": drops_count,
-        "classifications": classifications_count
-    }
+    return {"drops": drops_count, "classifications": classifications_count}
 
 
 def compute_relative_path(file_path: Path, input_paths: list[Path]) -> Path:
@@ -252,7 +273,13 @@ def compute_relative_path(file_path: Path, input_paths: list[Path]) -> Path:
     return Path(file_path.name)
 
 
-def drop_import(paths: list[Path], message: str, warehouse_root: Path, history_dir: Path, conn: sqlite3.Connection) -> Drop:
+def drop_import(
+    paths: list[Path],
+    message: str,
+    warehouse_root: Path,
+    history_dir: Path,
+    conn: sqlite3.Connection,
+) -> Drop:
     """Import files and create a drop in history."""
     from dwh.history import get_next_history_number
 
@@ -286,7 +313,7 @@ def drop_import(paths: list[Path], message: str, warehouse_root: Path, history_d
         message=message,
         actor=actor,
         created_at=receipt["created_at"],
-        entries=entries
+        entries=entries,
     )
 
 
@@ -300,20 +327,21 @@ def drop_list(conn: sqlite3.Connection) -> list[DropSummary]:
         ORDER BY d.created_at DESC
     """).fetchall()
 
-    return [DropSummary(
-        id=row["id"],
-        message=row["message"],
-        actor=row["actor"],
-        created_at=row["created_at"],
-        entry_count=row["entry_count"]
-    ) for row in rows]
+    return [
+        DropSummary(
+            id=row["id"],
+            message=row["message"],
+            actor=row["actor"],
+            created_at=row["created_at"],
+            entry_count=row["entry_count"],
+        )
+        for row in rows
+    ]
 
 
 def drop_inspect(drop_id: str, conn: sqlite3.Connection) -> Drop:
     """Get full drop details."""
-    drop_row = conn.execute(
-        "SELECT * FROM drops WHERE id = ?", (drop_id,)
-    ).fetchone()
+    drop_row = conn.execute("SELECT * FROM drops WHERE id = ?", (drop_id,)).fetchone()
 
     if not drop_row:
         raise DropNotFoundError(drop_id)
@@ -325,7 +353,7 @@ def drop_inspect(drop_id: str, conn: sqlite3.Connection) -> Drop:
            JOIN blobs b ON e.blob_hash = b.hash
            WHERE e.drop_id = ?
            ORDER BY e.relative_path""",
-        (drop_id,)
+        (drop_id,),
     ).fetchall()
 
     return Drop(
@@ -333,14 +361,17 @@ def drop_inspect(drop_id: str, conn: sqlite3.Connection) -> Drop:
         message=drop_row["message"],
         actor=drop_row["actor"],
         created_at=drop_row["created_at"],
-        entries=[Entry(
-            id=e["id"],
-            drop_id=e["drop_id"],
-            blob_hash=e["blob_hash"],
-            filename=e["filename"],
-            relative_path=e["relative_path"],
-            size=e["size"]
-        ) for e in entries]
+        entries=[
+            Entry(
+                id=e["id"],
+                drop_id=e["drop_id"],
+                blob_hash=e["blob_hash"],
+                filename=e["filename"],
+                relative_path=e["relative_path"],
+                size=e["size"],
+            )
+            for e in entries
+        ],
     )
 
 

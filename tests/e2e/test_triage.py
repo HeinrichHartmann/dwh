@@ -103,7 +103,9 @@ class TestTriageSync:
         assert result.exit_code == 0
         assert "Classified 1 files" in result.output
 
-    def test_triage_sync_creates_classification_record(self, runner, tmp_warehouse, single_file):
+    def test_triage_sync_creates_classification_record(
+        self, runner, tmp_warehouse, single_file
+    ):
         """Sync writes classification record to history."""
         # Import and triage
         run_cli(runner, ["drop", "import", "-m", "Test", str(single_file)])
@@ -167,7 +169,9 @@ class TestTriageSync:
 
         conn.close()
 
-    def test_triage_sync_clears_triage_directory(self, runner, tmp_warehouse, single_file):
+    def test_triage_sync_clears_triage_directory(
+        self, runner, tmp_warehouse, single_file
+    ):
         """Sync clears triage/ directory after completion."""
         # Import and triage
         run_cli(runner, ["drop", "import", "-m", "Test", str(single_file)])
@@ -191,7 +195,9 @@ class TestTriageSync:
         assert result.exit_code != 0
         assert "no triage in progress" in result.output.lower()
 
-    def test_triage_sync_with_nested_categories(self, runner, tmp_warehouse, sample_files):
+    def test_triage_sync_with_nested_categories(
+        self, runner, tmp_warehouse, sample_files
+    ):
         """Sync handles nested category directories."""
         # Import and triage
         run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
@@ -218,7 +224,9 @@ class TestTriageSync:
         assert classification["category"] == "finance/taxes/2024"
         assert classification["name"] == "invoice.txt"
 
-    def test_triage_sync_skips_unclassified_files(self, runner, tmp_warehouse, sample_files):
+    def test_triage_sync_skips_unclassified_files(
+        self, runner, tmp_warehouse, sample_files
+    ):
         """Sync reports files left in triage/ as skipped."""
         # Import and triage
         run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
@@ -227,7 +235,6 @@ class TestTriageSync:
         # Move only some files
         finance_dir = tmp_warehouse / "finance"
         finance_dir.mkdir(parents=True)
-
 
         triage_dir = tmp_warehouse / "_triage"
         (triage_dir / "file1.txt").rename(finance_dir / "file1.txt")
@@ -247,7 +254,9 @@ class TestTriageWorkflow:
     def test_complete_triage_workflow(self, runner, tmp_warehouse, sample_files):
         """Complete workflow: import → triage → organize → sync."""
         # 1. Import
-        result = run_cli(runner, ["drop", "import", "-m", "Documents", str(sample_files)])
+        result = run_cli(
+            runner, ["drop", "import", "-m", "Documents", str(sample_files)]
+        )
         assert result.exit_code == 0
         drop_id = extract_drop_id(result.output)
 
@@ -283,6 +292,7 @@ class TestTriageWorkflow:
 
         # Check database
         import sqlite3
+
         db_path = tmp_warehouse / ".dwh" / "dwh.db"
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -330,6 +340,7 @@ class TestTriageWorkflow:
 
         # Verify two documents
         import sqlite3
+
         db_path = tmp_warehouse / ".dwh" / "dwh.db"
         conn = sqlite3.connect(db_path)
         documents = conn.execute("SELECT * FROM documents").fetchall()

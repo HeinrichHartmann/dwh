@@ -14,11 +14,13 @@ from dwh import history as history_module
 
 class TriageError(Exception):
     """Base exception for triage operations."""
+
     pass
 
 
 class NoTriageInProgressError(TriageError):
     """No triage in progress."""
+
     def __init__(self):
         super().__init__("No triage in progress")
 
@@ -26,6 +28,7 @@ class NoTriageInProgressError(TriageError):
 @dataclass
 class TriageMatch:
     """A matched file from triage to documents."""
+
     entry_id: str
     triage_path: Path
     document_path: Path
@@ -33,7 +36,13 @@ class TriageMatch:
     name: str
 
 
-def triage_checkout(drop_id: str | None, warehouse_root: Path, history_dir: Path, triage_dir: Path, conn: sqlite3.Connection) -> drop_module.Drop:
+def triage_checkout(
+    drop_id: str | None,
+    warehouse_root: Path,
+    history_dir: Path,
+    triage_dir: Path,
+    conn: sqlite3.Connection,
+) -> drop_module.Drop:
     """
     Checkout a drop for triage.
 
@@ -76,16 +85,15 @@ def triage_checkout(drop_id: str | None, warehouse_root: Path, history_dir: Path
 
     # Record triage state
     conn.execute("DELETE FROM triage_state")  # Clear old state
-    conn.execute(
-        "INSERT INTO triage_state (id, drop_id) VALUES (1, ?)",
-        (d.id,)
-    )
+    conn.execute("INSERT INTO triage_state (id, drop_id) VALUES (1, ?)", (d.id,))
     conn.commit()
 
     return d
 
 
-def triage_sync(warehouse_root: Path, triage_dir: Path, history_dir: Path, conn: sqlite3.Connection) -> dict:
+def triage_sync(
+    warehouse_root: Path, triage_dir: Path, history_dir: Path, conn: sqlite3.Connection
+) -> dict:
     """
     Sync triage: match files, create classifications, update database.
 
@@ -106,8 +114,7 @@ def triage_sync(warehouse_root: Path, triage_dir: Path, history_dir: Path, conn:
 
     # Get all entries from the drop being triaged
     entries = conn.execute(
-        "SELECT * FROM entries WHERE drop_id = ?",
-        (triaging_drop_id,)
+        "SELECT * FROM entries WHERE drop_id = ?", (triaging_drop_id,)
     ).fetchall()
 
     # Build entry lookup by hash
@@ -155,7 +162,7 @@ def triage_sync(warehouse_root: Path, triage_dir: Path, history_dir: Path, conn:
         # Skip if this entry is already classified
         existing = conn.execute(
             "SELECT id FROM documents WHERE entry_id IN (SELECT id FROM entries WHERE blob_hash = ?)",
-            (doc_hash,)
+            (doc_hash,),
         ).fetchone()
         if existing:
             continue  # Already a document
@@ -172,13 +179,15 @@ def triage_sync(warehouse_root: Path, triage_dir: Path, history_dir: Path, conn:
             category = str(doc_path.parent) if doc_path.parent != Path(".") else ""
             name = doc_path.name
 
-            matches.append(TriageMatch(
-                entry_id=entry["id"],
-                triage_path=triage_dir / entry["relative_path"],
-                document_path=doc_file,
-                category=category,
-                name=name
-            ))
+            matches.append(
+                TriageMatch(
+                    entry_id=entry["id"],
+                    triage_path=triage_dir / entry["relative_path"],
+                    document_path=doc_file,
+                    category=category,
+                    name=name,
+                )
+            )
         else:
             # Ambiguous: multiple entries with same hash
             ambiguous.append(doc_path_str)
@@ -194,16 +203,18 @@ def triage_sync(warehouse_root: Path, triage_dir: Path, history_dir: Path, conn:
             cursor = conn.execute(
                 """INSERT INTO documents (entry_id, name, category)
                    VALUES (?, ?, ?)""",
-                (match.entry_id, match.name, match.category)
+                (match.entry_id, match.name, match.category),
             )
             document_id = cursor.lastrowid
 
-            classifications.append({
-                "entry_id": match.entry_id,
-                "document_id": document_id,
-                "category": match.category,
-                "name": match.name
-            })
+            classifications.append(
+                {
+                    "entry_id": match.entry_id,
+                    "document_id": document_id,
+                    "category": match.category,
+                    "name": match.name,
+                }
+            )
 
         # Write classification record
         classification_record = {
@@ -211,7 +222,7 @@ def triage_sync(warehouse_root: Path, triage_dir: Path, history_dir: Path, conn:
             "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "actor": getpass.getuser(),
             "message": "Triage sync",
-            "classifications": classifications
+            "classifications": classifications,
         }
 
         with open(classify_file, "w") as f:
@@ -229,7 +240,7 @@ def triage_sync(warehouse_root: Path, triage_dir: Path, history_dir: Path, conn:
     return {
         "classified": len(matches),
         "skipped": len(triage_files),
-        "ambiguous": ambiguous
+        "ambiguous": ambiguous,
     }
 
 
