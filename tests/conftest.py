@@ -35,9 +35,14 @@ def tmp_warehouse(runner, tmp_path):
 
 @pytest.fixture
 def sample_files(tmp_path):
-    """Create sample test files with known content."""
-    sample_dir = tmp_path / "samples"
-    sample_dir.mkdir()
+    """Create sample test files with known content.
+
+    Creates files outside the warehouse directory to avoid
+    conflicts with triage scanning logic.
+    """
+    # Create samples in parent directory, outside warehouse
+    sample_dir = tmp_path.parent / f"samples_{tmp_path.name}"
+    sample_dir.mkdir(exist_ok=True)
 
     # Create various test files
     (sample_dir / "file1.txt").write_text("Content of file 1\n")
@@ -45,11 +50,11 @@ def sample_files(tmp_path):
 
     # Create nested structure
     subdir = sample_dir / "subdir"
-    subdir.mkdir()
+    subdir.mkdir(exist_ok=True)
     (subdir / "nested.txt").write_text("Nested file content\n")
 
     deeper = subdir / "deeper"
-    deeper.mkdir()
+    deeper.mkdir(exist_ok=True)
     (deeper / "deep.txt").write_text("Deep nested content\n")
 
     return sample_dir
@@ -57,17 +62,18 @@ def sample_files(tmp_path):
 
 @pytest.fixture
 def single_file(tmp_path):
-    """Create a single test file."""
-    file_path = tmp_path / "single.txt"
+    """Create a single test file outside warehouse."""
+    # Create in parent directory to avoid warehouse scanning
+    file_path = tmp_path.parent / f"single_{tmp_path.name}.txt"
     file_path.write_text("Single file content\n")
     return file_path
 
 
 @pytest.fixture
 def empty_dir(tmp_path):
-    """Create an empty directory."""
-    empty = tmp_path / "empty"
-    empty.mkdir()
+    """Create an empty directory outside warehouse."""
+    empty = tmp_path.parent / f"empty_{tmp_path.name}"
+    empty.mkdir(exist_ok=True)
     return empty
 
 

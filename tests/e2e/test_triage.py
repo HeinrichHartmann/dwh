@@ -40,7 +40,7 @@ class TestTriageCheckout:
         drop_id = extract_drop_id(result.output)
 
         # Triage with specific drop_id
-        result = run_cli(runner, ["_triage", "checkout", drop_id])
+        result = run_cli(runner, ["triage", "checkout", drop_id])
 
         assert result.exit_code == 0
         assert drop_id in result.output
@@ -143,10 +143,12 @@ class TestTriageSync:
         run_cli(runner, ["drop", "import", "-m", "Test", str(single_file)])
         run_cli(runner, ["triage", "checkout"])
 
-        # Move file
+        # Move file to category (ADR-003: files must be in category dirs)
+        docs_cat = tmp_warehouse / "docs"
+        docs_cat.mkdir(parents=True)
 
         triage_dir = tmp_warehouse / "_triage"
-        (triage_dir / single_file.name).rename(tmp_warehouse / single_file.name)
+        (triage_dir / single_file.name).rename(docs_cat / single_file.name)
 
         # Sync
         run_cli(runner, ["triage", "sync"])
@@ -161,7 +163,7 @@ class TestTriageSync:
 
         doc = documents[0]
         assert doc["name"] == single_file.name
-        assert doc["category"] == ""
+        assert doc["category"] == "docs"
 
         conn.close()
 
@@ -223,9 +225,12 @@ class TestTriageSync:
         run_cli(runner, ["triage", "checkout"])
 
         # Move only some files
+        finance_dir = tmp_warehouse / "finance"
+        finance_dir.mkdir(parents=True)
+
 
         triage_dir = tmp_warehouse / "_triage"
-        (triage_dir / "file1.txt").rename(tmp_warehouse / "file1.txt")
+        (triage_dir / "file1.txt").rename(finance_dir / "file1.txt")
         # Leave file2.txt and others in triage/
 
         # Sync
@@ -247,13 +252,15 @@ class TestTriageWorkflow:
         drop_id = extract_drop_id(result.output)
 
         # 2. Triage
-        result = run_cli(runner, ["_triage", "checkout", drop_id])
+        result = run_cli(runner, ["triage", "checkout", drop_id])
         assert result.exit_code == 0
 
         triage_dir = tmp_warehouse / "_triage"
         assert triage_dir.exists()
 
         # 3. User organizes files
+        (tmp_warehouse / "work").mkdir(parents=True)
+        (tmp_warehouse / "personal").mkdir(parents=True)
 
         (triage_dir / "file1.txt").rename(tmp_warehouse / "work" / "report.txt")
         (triage_dir / "file2.txt").rename(tmp_warehouse / "personal" / "notes.txt")
@@ -296,21 +303,23 @@ class TestTriageWorkflow:
         run_cli(runner, ["drop", "import", "-m", "First", str(single_file)])
         run_cli(runner, ["triage", "checkout"])
 
+        docs_dir = tmp_warehouse / "docs"
+        docs_dir.mkdir(parents=True)
 
         triage_dir = tmp_warehouse / "_triage"
-        (triage_dir / single_file.name).rename(tmp_warehouse / "first.txt")
+        (triage_dir / single_file.name).rename(docs_dir / "first.txt")
 
         run_cli(runner, ["triage", "sync"])
 
-        # Second cycle with different file
-        second_file = tmp_path / "second.txt"
+        # Second cycle with different file (create outside warehouse)
+        second_file = tmp_path.parent / "second.txt"
         second_file.write_text("second content")
 
         run_cli(runner, ["drop", "import", "-m", "Second", str(second_file)])
         run_cli(runner, ["triage", "checkout"])
 
         triage_dir = tmp_warehouse / "_triage"
-        (triage_dir / "second.txt").rename(tmp_warehouse / "second.txt")
+        (triage_dir / second_file.name).rename(docs_dir / "second.txt")
 
         run_cli(runner, ["triage", "sync"])
 

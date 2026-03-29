@@ -52,12 +52,12 @@ class TestRebuild:
         run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
         run_cli(runner, ["triage", "checkout"])
 
-        # Move files
-        documents_dir = tmp_warehouse / "documents"
-        documents_dir.mkdir(parents=True, exist_ok=True)
+        # Move files (ADR-003: categories at root)
+        docs_dir = tmp_warehouse / "docs"
+        docs_dir.mkdir(parents=True, exist_ok=True)
 
-        triage_dir = tmp_warehouse / "triage"
-        (triage_dir / "file1.txt").rename(documents_dir / "file1.txt")
+        triage_dir = tmp_warehouse / "_triage"
+        (triage_dir / "file1.txt").rename(docs_dir / "file1.txt")
 
         # Sync
         run_cli(runner, ["triage", "sync"])
