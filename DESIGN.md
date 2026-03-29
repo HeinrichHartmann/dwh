@@ -251,8 +251,8 @@ Triage is the process of classifying entries from a drop.
 
 ```bash
 # Checkout a drop for triage
-dwh triage                    # Latest unprocessed drop
-dwh triage <drop_id>          # Specific drop
+dwh triage checkout           # Latest unprocessed drop
+dwh triage checkout <drop_id> # Specific drop
 
 # User organizes files
 mv triage/invoice.pdf documents/finance/taxes/
@@ -266,7 +266,7 @@ dwh triage sync
 
 ### Triage Flow
 
-1. **`dwh triage`** - Checks out a drop to `./triage/`
+1. **`dwh triage checkout`** - Checks out a drop to `./triage/`
    - Creates `triage/` directory
    - Links/copies files from the drop's entries
    - Records which drop is being triaged
@@ -377,7 +377,7 @@ warehouse/
 | `dwh drop import -m "msg" <paths>` | Import files, create drop in history |
 | `dwh drop list` | List all drops |
 | `dwh drop inspect <drop_id>` | Show drop details |
-| `dwh triage [drop_id]` | Checkout drop for triage |
+| `dwh triage checkout [drop_id]` | Checkout drop for triage |
 | `dwh triage sync` | Finalize triage, create classifications |
 | `dwh file <entry_id> --category X` | Explicitly classify an entry |
 | `dwh restore` | Rebuild projections from database |

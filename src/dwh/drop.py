@@ -156,6 +156,76 @@ def apply_drop_to_db(conn: sqlite3.Connection, receipt: dict, entries: list[Entr
     conn.commit()
 
 
+def apply_classification_to_db(conn: sqlite3.Connection, record: dict) -> None:
+    """Apply classification record to database."""
+    for classification in record.get("classifications", []):
+        # Insert document record (ignore if already exists)
+        conn.execute(
+            """INSERT OR IGNORE INTO documents (entry_id, name, category)
+               VALUES (?, ?, ?)""",
+            (classification["entry_id"], classification["name"], classification["category"])
+        )
+    conn.commit()
+
+
+def rebuild_database(history_dir: Path, db_path: Path) -> dict:
+    """Rebuild database by replaying history.
+
+    Returns: {
+        "drops": int,
+        "classifications": int
+    }
+    """
+    from dwh import db
+
+    # Delete existing database and create fresh one
+    if db_path.exists():
+        db_path.unlink()
+
+    db.init_db(db_path)
+    conn = db.connect(db_path)
+
+    drops_count = 0
+    classifications_count = 0
+
+    # Replay history in order
+    for item in sorted(history_dir.iterdir()):
+        if item.is_dir() and "_drop_" in item.name:
+            # Load drop receipt
+            receipt_path = item / "receipt.json"
+            if not receipt_path.exists():
+                continue
+
+            receipt = json.loads(receipt_path.read_text())
+            drop_id = receipt["drop_id"]
+
+            # Derive entries from tree/
+            tree_dir = item / "tree"
+            if not tree_dir.exists():
+                continue
+
+            entries = derive_entries(tree_dir, drop_id)
+
+            # Apply to database
+            apply_drop_to_db(conn, receipt, entries)
+            drops_count += 1
+
+        elif item.is_file() and item.suffix == ".json" and "_classify" in item.name:
+            # Load classification record
+            record = json.loads(item.read_text())
+
+            # Apply to database
+            apply_classification_to_db(conn, record)
+            classifications_count += 1
+
+    conn.close()
+
+    return {
+        "drops": drops_count,
+        "classifications": classifications_count
+    }
+
+
 def compute_relative_path(file_path: Path, input_paths: list[Path]) -> Path:
     """Compute relative path for file within the import context.
 
@@ -248,8 +318,14 @@ def drop_inspect(drop_id: str, conn: sqlite3.Connection) -> Drop:
     if not drop_row:
         raise DropNotFoundError(drop_id)
 
+    # Join with blobs to get file sizes
     entries = conn.execute(
-        "SELECT * FROM entries WHERE drop_id = ? ORDER BY relative_path", (drop_id,)
+        """SELECT e.*, b.size
+           FROM entries e
+           JOIN blobs b ON e.blob_hash = b.hash
+           WHERE e.drop_id = ?
+           ORDER BY e.relative_path""",
+        (drop_id,)
     ).fetchall()
 
     return Drop(
@@ -263,7 +339,7 @@ def drop_inspect(drop_id: str, conn: sqlite3.Connection) -> Drop:
             blob_hash=e["blob_hash"],
             filename=e["filename"],
             relative_path=e["relative_path"],
-            size=0  # Size not needed for inspect
+            size=e["size"]
         ) for e in entries]
     )
 

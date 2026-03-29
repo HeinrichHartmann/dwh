@@ -46,6 +46,28 @@ def init(path: Path, name: str | None):
         sys.exit(1)
 
 
+@main.command()
+def rebuild():
+    """Rebuild database from history."""
+    try:
+        wh = warehouse.find_warehouse(require_db=False)
+
+        click.echo("Rebuilding database from history...")
+
+        result = drop.rebuild_database(wh.history_dir, wh.db_path)
+
+        click.echo(f"✓ Replayed {result['drops']} drops")
+        click.echo(f"✓ Replayed {result['classifications']} classifications")
+        click.echo("Database rebuild complete")
+
+    except warehouse.WarehouseNotFoundError:
+        click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error rebuilding database: {e}", err=True)
+        sys.exit(1)
+
+
 @main.group()
 def drop_cmd():
     """Manage drops (import events)."""

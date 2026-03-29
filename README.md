@@ -33,7 +33,7 @@ dwh init .
 dwh drop import -m "Tax documents 2024" ~/Downloads/tax/
 
 # Triage the drop (checkout for classification)
-dwh triage
+dwh triage checkout
 
 # Move files to documents/ to classify them
 mv triage/invoice.pdf documents/finance/taxes/
@@ -75,10 +75,10 @@ Triage is how you classify documents from a drop.
 
 ```bash
 # Checkout the latest unprocessed drop
-dwh triage
+dwh triage checkout
 
 # Or checkout a specific drop
-dwh triage d_2026-03-28_143211_8f3c
+dwh triage checkout d_2026-03-28_143211_8f3c
 
 # Organize files by moving them to documents/
 mkdir -p documents/finance/taxes

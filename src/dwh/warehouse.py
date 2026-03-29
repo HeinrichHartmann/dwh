@@ -48,14 +48,24 @@ class Warehouse:
         return db.connect(self.db_path)
 
 
-def find_warehouse(start_path: Path | None = None) -> Warehouse:
-    """Find warehouse by walking up from start_path."""
+def find_warehouse(start_path: Path | None = None, require_db: bool = True) -> Warehouse:
+    """Find warehouse by walking up from start_path.
+
+    Args:
+        start_path: Starting directory (defaults to cwd)
+        require_db: If True, require database to exist. If False, only require .dwh/ directory.
+    """
     current = (start_path or Path.cwd()).resolve()
 
     while True:
         warehouse = Warehouse(current)
-        if warehouse.exists():
-            return warehouse
+        if require_db:
+            if warehouse.exists():
+                return warehouse
+        else:
+            # For rebuild, only require .dwh directory
+            if warehouse.dwh_dir.exists():
+                return warehouse
 
         if current.parent == current:
             # Reached filesystem root
