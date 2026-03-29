@@ -194,6 +194,9 @@ class TestRebuild:
         try:
             result = run_cli(runner, ["rebuild"])
             assert result.exit_code != 0
-            assert "not in a warehouse" in result.output.lower()
+            assert (
+                "not in a warehouse" in result.output.lower()
+                or "no warehouse selected" in result.output.lower()
+            )
         finally:
             os.chdir(orig_dir)

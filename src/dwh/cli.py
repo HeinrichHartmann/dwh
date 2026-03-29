@@ -16,9 +16,12 @@ def main():
 
 @main.command()
 @click.argument("path", type=click.Path(path_type=Path), default=".")
-@click.option("--name", help="Warehouse name (defaults to directory name)")
-def init(path: Path, name: str | None):
+@click.option("--name", help="Warehouse display name (defaults to directory name)")
+@click.option("--register-as", help="Registry name (defaults to directory name)")
+def init(path: Path, name: str | None, register_as: str | None):
     """Initialize a new warehouse."""
+    from dwh.global_config import GlobalConfig
+
     path = path.resolve()
     wh = warehouse.Warehouse(path)
 
@@ -45,6 +48,28 @@ def init(path: Path, name: str | None):
         click.echo("  _history/   - Event log (source of truth, backup required)")
         click.echo("  _triage/    - Working directory (ephemeral)")
 
+        # Register in global config (ADR-004)
+        registry_name = register_as or path.name
+        global_config = GlobalConfig.load()
+
+        if registry_name in global_config.warehouses:
+            click.echo()
+            click.echo(f"Note: Warehouse '{registry_name}' already registered.")
+        else:
+            global_config.add_warehouse(
+                name=registry_name, path=path, display_name=name or path.name
+            )
+            global_config.save()
+
+            click.echo()
+            click.echo(f"Registered as: {registry_name}")
+
+            # Auto-select if first warehouse
+            if len(global_config.warehouses) == 1:
+                global_config.default_warehouse = registry_name
+                global_config.save()
+                click.echo("Selected as active warehouse")
+
     except Exception as e:
         click.echo(f"Error initializing warehouse: {e}", err=True)
         sys.exit(1)
@@ -54,7 +79,7 @@ def init(path: Path, name: str | None):
 def rebuild():
     """Rebuild database from history."""
     try:
-        wh = warehouse.find_warehouse(require_db=False)
+        wh = warehouse.resolve_warehouse(require_db=False)
 
         click.echo("Rebuilding database from history...")
 
@@ -66,6 +91,9 @@ def rebuild():
 
     except warehouse.WarehouseNotFoundError:
         click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(1)
+    except warehouse.NoWarehouseSpecifiedError as e:
+        click.echo(f"Error: {e}", err=True)
         sys.exit(1)
     except Exception as e:
         click.echo(f"Error rebuilding database: {e}", err=True)
@@ -90,7 +118,7 @@ drop_cmd.name = "drop"
 def drop_import_cmd(message: str, paths: tuple[Path, ...]):
     """Import files into the warehouse."""
     try:
-        wh = warehouse.find_warehouse()
+        wh = warehouse.resolve_warehouse()
         conn = wh.connect()
 
         result = drop.drop_import(list(paths), message, wh.root, wh.history_dir, conn)
@@ -101,7 +129,10 @@ def drop_import_cmd(message: str, paths: tuple[Path, ...]):
         conn.close()
 
     except warehouse.WarehouseNotFoundError:
-        click.echo("Error: Not in a warehouse. Run 'dwh init' first.", err=True)
+        click.echo("Error: Warehouse not found.", err=True)
+        sys.exit(1)
+    except warehouse.NoWarehouseSpecifiedError as e:
+        click.echo(f"Error: {e}", err=True)
         sys.exit(1)
     except Exception as e:
         click.echo(f"Error importing: {e}", err=True)
@@ -112,7 +143,7 @@ def drop_import_cmd(message: str, paths: tuple[Path, ...]):
 def drop_list_cmd():
     """List all drops."""
     try:
-        wh = warehouse.find_warehouse()
+        wh = warehouse.resolve_warehouse()
         conn = wh.connect()
 
         drops = drop.drop_list(conn)
@@ -145,7 +176,7 @@ def drop_list_cmd():
 def drop_inspect_cmd(drop_id: str):
     """Show detailed information about a drop."""
     try:
-        wh = warehouse.find_warehouse()
+        wh = warehouse.resolve_warehouse()
         conn = wh.connect()
 
         d = drop.drop_inspect(drop_id, conn)
@@ -185,7 +216,7 @@ def drop_inspect_cmd(drop_id: str):
 def drop_export_cmd(drop_id: str, destination: Path):
     """Export a drop to a destination directory."""
     try:
-        wh = warehouse.find_warehouse()
+        wh = warehouse.resolve_warehouse()
 
         count = drop.drop_export(drop_id, destination, wh.history_dir)
 
@@ -216,7 +247,7 @@ triage_group.name = "triage"
 def triage_checkout(drop_id: str | None):
     """Checkout a drop for triage."""
     try:
-        wh = warehouse.find_warehouse()
+        wh = warehouse.resolve_warehouse()
         conn = wh.connect()
 
         d = triage.triage_checkout(
@@ -243,7 +274,7 @@ def triage_checkout(drop_id: str | None):
 def triage_sync_cmd():
     """Finalize triage and create classifications."""
     try:
-        wh = warehouse.find_warehouse()
+        wh = warehouse.resolve_warehouse()
         conn = wh.connect()
 
         result = triage.triage_sync(wh.root, wh.triage_dir, wh.history_dir, conn)
@@ -270,6 +301,64 @@ def triage_sync_cmd():
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+
+
+@main.group()
+def warehouse_group():
+    """Manage warehouses."""
+    pass
+
+
+warehouse_group.name = "warehouse"
+
+
+@warehouse_group.command("list")
+def warehouse_list():
+    """List all registered warehouses."""
+    from dwh.global_config import GlobalConfig
+
+    global_config = GlobalConfig.load()
+
+    if not global_config.warehouses:
+        click.echo("No warehouses registered.")
+        click.echo()
+        click.echo("Initialize a warehouse with:")
+        click.echo("  dwh init <path>")
+        return
+
+    # Print header
+    click.echo(f"{'NAME':<15} {'PATH':<50} {'SELECTED'}")
+    click.echo("-" * 70)
+
+    # Print warehouses
+    for name, wh in global_config.warehouses.items():
+        is_selected = name == global_config.default_warehouse
+        selected_mark = "*" if is_selected else ""
+        click.echo(f"{name:<15} {str(wh.path):<50} {selected_mark}")
+
+
+@warehouse_group.command("select")
+@click.argument("name")
+def warehouse_select(name: str):
+    """Select the active warehouse."""
+    from dwh.global_config import GlobalConfig
+
+    global_config = GlobalConfig.load()
+
+    if name not in global_config.warehouses:
+        click.echo(f"Error: Warehouse '{name}' not found.", err=True)
+        click.echo()
+        click.echo("Available warehouses:")
+        for wh_name in global_config.warehouses.keys():
+            click.echo(f"  {wh_name}")
+        sys.exit(1)
+
+    global_config.default_warehouse = name
+    global_config.save()
+
+    wh_path = global_config.warehouses[name].path
+    click.echo(f"Selected warehouse: {name}")
+    click.echo(f"  Path: {wh_path}")
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import sqlite3
 from pathlib import Path
 
 from dwh import db
+from dwh.global_config import GlobalConfig
 
 
 class WarehouseError(Exception):
@@ -26,6 +27,16 @@ class WarehouseNotFoundError(WarehouseError):
     def __init__(self, path: Path):
         super().__init__(f"Warehouse not found at {path}")
         self.path = path
+
+
+class NoWarehouseSpecifiedError(WarehouseError):
+    """No warehouse selected."""
+
+    def __init__(self):
+        super().__init__(
+            "No warehouse selected. Run 'dwh warehouse select <name>' to choose a warehouse. "
+            "Use 'dwh warehouse list' to see available warehouses."
+        )
 
 
 class Warehouse:
@@ -81,3 +92,90 @@ def find_warehouse(
             raise WarehouseNotFoundError(start_path or Path.cwd())
 
         current = current.parent
+
+
+def resolve_warehouse(
+    start_dir: Path | None = None, require_db: bool = True
+) -> Warehouse:
+    """
+    Resolve warehouse (simplified for v1).
+
+    Priority:
+    1. Current directory (if inside warehouse)
+    2. Selected warehouse from global config
+    3. Error
+
+    Args:
+        start_dir: Starting directory for current-dir search (defaults to cwd)
+        require_db: If True, require database to exist. If False, only require .dwh/ directory.
+
+    Returns:
+        Warehouse instance
+
+    Raises:
+        NoWarehouseSpecifiedError: If no warehouse could be resolved
+        WarehouseNotFoundError: If specified warehouse doesn't exist
+    """
+    if start_dir is None:
+        start_dir = Path.cwd()
+
+    # 1. Try current directory
+    try:
+        return find_warehouse(start_dir, require_db=require_db)
+    except WarehouseNotFoundError:
+        pass
+
+    # 2. Try selected warehouse from config
+    global_config = GlobalConfig.load()
+    if global_config.default_warehouse:
+        return resolve_warehouse_ref(
+            global_config.default_warehouse, require_db=require_db
+        )
+
+    # 3. Error
+    raise NoWarehouseSpecifiedError()
+
+
+def resolve_warehouse_ref(ref: str, require_db: bool = True) -> Warehouse:
+    """
+    Resolve warehouse reference (name or path).
+
+    - If ref is a path: use that path
+    - If ref is a name: look up in registry
+
+    Args:
+        ref: Warehouse name (from registry) or path
+        require_db: If True, require database to exist. If False, only require .dwh/ directory.
+
+    Returns:
+        Warehouse instance
+
+    Raises:
+        WarehouseNotFoundError: If warehouse doesn't exist
+    """
+    path = Path(ref).expanduser()
+
+    # Try as path first
+    if path.exists():
+        warehouse = Warehouse(path)
+        if require_db:
+            if warehouse.exists():
+                return warehouse
+        else:
+            if warehouse.dwh_dir.exists():
+                return warehouse
+
+    # Try as name in registry
+    global_config = GlobalConfig.load()
+    if ref in global_config.warehouses:
+        wh_path = global_config.warehouses[ref].path
+        warehouse = Warehouse(wh_path)
+        if require_db:
+            if warehouse.exists():
+                return warehouse
+        else:
+            if warehouse.dwh_dir.exists():
+                return warehouse
+
+    # Not found
+    raise WarehouseNotFoundError(Path(ref))

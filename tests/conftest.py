@@ -12,6 +12,22 @@ from click.testing import CliRunner
 from dwh.cli import main
 
 
+@pytest.fixture(autouse=True)
+def isolated_config(tmp_path, monkeypatch):
+    """Isolate global config for each test.
+
+    This ensures each test gets its own global config directory,
+    preventing warehouse registrations from leaking between tests.
+    """
+    test_config_dir = tmp_path / ".config" / "dwh"
+    test_config_dir.mkdir(parents=True, exist_ok=True)
+
+    # Override XDG_CONFIG_HOME to point to test directory
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+
+    return test_config_dir
+
+
 @pytest.fixture
 def runner():
     """Provide Click test runner."""
