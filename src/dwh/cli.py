@@ -266,7 +266,7 @@ def triage_sync_cmd():
             click.echo(f"⚠ Skipped {result['skipped']} files still in triage/")
 
         if result["ambiguous"]:
-            click.echo(f"⚠ Ambiguous files (skipped):")
+            click.echo("⚠ Ambiguous files (skipped):")
             for path in result["ambiguous"]:
                 click.echo(f"  - {path}")
 
