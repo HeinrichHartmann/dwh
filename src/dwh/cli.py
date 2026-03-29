@@ -1,154 +1,181 @@
-"""Command-line interface for dwh."""
+"""CLI for DWH."""
 
+import sys
 from pathlib import Path
 
 import click
 
-from dwh.warehouse import Warehouse
-from dwh.db import get_connection
-from dwh.storage import import_files
+from dwh import db, drop, warehouse
 
 
 @click.group()
-@click.version_option()
 def main():
-    """Document Warehouse - metadata-centric document archival system."""
-    pass
-
-
-@main.group()
-def store():
-    """Manage blob storage operations."""
-    pass
-
-
-@main.group()
-def originals():
-    """Manage originals tree operations."""
+    """Document Warehouse - metadata-centric document archival."""
     pass
 
 
 @main.command()
-@click.argument("path", default=".", type=click.Path())
-def init(path):
-    """Initialize a document warehouse at PATH."""
-    warehouse_path = Path(path).resolve()
-    click.echo(f"Initializing document warehouse at {warehouse_path}...")
+@click.argument("path", type=click.Path(path_type=Path), default=".")
+@click.option("--name", help="Warehouse name (defaults to directory name)")
+def init(path: Path, name: str | None):
+    """Initialize a new warehouse."""
+    path = path.resolve()
+    wh = warehouse.Warehouse(path)
 
-    warehouse = Warehouse(warehouse_path)
-
-    if warehouse.exists():
-        click.echo(f"✗ Warehouse already exists at {warehouse_path}", err=True)
-        raise click.Abort()
+    if wh.exists():
+        click.echo(f"Error: Warehouse already exists at {path}", err=True)
+        sys.exit(1)
 
     try:
-        warehouse.init()
-        click.echo(f"✓ Created .dwh/")
-        click.echo(f"✓ Created inbox/")
-        click.echo(f"✓ Created originals/pile/")
-        click.echo(f"✓ Initialized database")
-        click.echo()
-        click.echo(f"Warehouse initialized at {warehouse_path}")
+        # Create directory structure
+        wh.dwh_dir.mkdir(parents=True, exist_ok=True)
+        wh.history_dir.mkdir(parents=True, exist_ok=True)
+        wh.triage_dir.mkdir(parents=True, exist_ok=True)
+        wh.documents_dir.mkdir(parents=True, exist_ok=True)
+
+        # Initialize database
+        db.init_db(wh.db_path)
+
+        # Write basic config (placeholder for now)
+        wh.config_path.write_text(f'name = "{name or path.name}"\nversion = "1"\n')
+
+        click.echo(f"Initialized warehouse at {path}")
+
     except Exception as e:
-        click.echo(f"✗ Failed to initialize warehouse: {e}", err=True)
-        raise click.Abort()
+        click.echo(f"Error initializing warehouse: {e}", err=True)
+        sys.exit(1)
 
 
-@store.command(name="import")
-@click.option("-m", "--message", required=True, help="Import message describing the source/purpose")
-@click.argument("paths", nargs=-1, required=True, type=click.Path(exists=True))
-def import_cmd(message, paths):
-    """Import files with transaction tracking.
+@main.group()
+def drop_cmd():
+    """Manage drops (import events)."""
+    pass
 
-    PATHS can be files or directories. Directories are scanned recursively.
 
-    Example:
-        dwh store import -m "Bank statements 2023" inbox/statements/
-        dwh store import -m "Tax documents" file1.pdf file2.pdf folder/
-    """
-    warehouse = Warehouse.find()
-    if not warehouse:
-        click.echo("✗ No warehouse found. Run 'dwh init' first.", err=True)
-        raise click.Abort()
+# Rename the group to 'drop' so commands work as 'dwh drop ...'
+drop_cmd.name = "drop"
 
-    # Convert string paths to Path objects
-    path_objects = [Path(p).resolve() for p in paths]
 
-    click.echo(f"Importing from {len(path_objects)} path(s)...")
-
+@drop_cmd.command("import")
+@click.option("-m", "--message", required=True, help="Import message (required)")
+@click.argument("paths", nargs=-1, type=click.Path(exists=True, path_type=Path), required=True)
+def drop_import_cmd(message: str, paths: tuple[Path, ...]):
+    """Import files into the warehouse."""
     try:
-        conn = get_connection(warehouse.db_path)
-        import_id, stored_count = import_files(
-            path_objects,
+        wh = warehouse.find_warehouse()
+        conn = wh.connect()
+
+        result = drop.drop_import(
+            list(paths),
             message,
-            warehouse.root,
-            warehouse.store_dir,
+            wh.root,
+            wh.history_dir,
             conn
         )
+
+        click.echo(f"Imported {len(result.entries)} files")
+        click.echo(f"Drop ID: {result.id}")
+
         conn.close()
 
-        click.echo(f"✓ Imported {stored_count} file(s)")
-        click.echo(f"  Transaction ID: {import_id}")
-        click.echo(f"  Message: {message}")
-
-    except ValueError as e:
-        click.echo(f"✗ {e}", err=True)
-        raise click.Abort()
+    except warehouse.WarehouseNotFoundError:
+        click.echo("Error: Not in a warehouse. Run 'dwh init' first.", err=True)
+        sys.exit(1)
     except Exception as e:
-        click.echo(f"✗ Import failed: {e}", err=True)
-        raise click.Abort()
+        click.echo(f"Error importing: {e}", err=True)
+        sys.exit(1)
 
 
-@originals.command()
-@click.option("-y", "--yes", is_flag=True, help="Auto-confirm without prompting")
-@click.option("--force", is_flag=True, help="Store + capture unknown files")
-def capture(yes, force):
-    """Capture placements and infer metadata from originals/ tree."""
-    click.echo("Scanning originals/ tree...")
-    # TODO: Implement capture
+@drop_cmd.command("list")
+def drop_list_cmd():
+    """List all drops."""
+    try:
+        wh = warehouse.find_warehouse()
+        conn = wh.connect()
+
+        drops = drop.drop_list(conn)
+
+        if not drops:
+            click.echo("No drops yet.")
+            return
+
+        # Print header
+        click.echo(f"{'DROP_ID':<32} {'DATE':<12} {'FILES':<6} MESSAGE")
+        click.echo("-" * 80)
+
+        # Print drops
+        for d in drops:
+            date = d.created_at[:10]  # YYYY-MM-DD
+            click.echo(f"{d.id:<32} {date:<12} {d.entry_count:<6} {d.message}")
+
+        conn.close()
+
+    except warehouse.WarehouseNotFoundError:
+        click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error listing drops: {e}", err=True)
+        sys.exit(1)
 
 
-@originals.command()
-@click.option("--dry-run", is_flag=True, help="Show what would change")
-def sync(dry_run):
-    """Regenerate originals/ from metadata."""
-    if dry_run:
-        click.echo("Dry run: would sync originals/")
-    else:
-        click.echo("Syncing originals/...")
-    # TODO: Implement sync
+@drop_cmd.command("inspect")
+@click.argument("drop_id")
+def drop_inspect_cmd(drop_id: str):
+    """Show detailed information about a drop."""
+    try:
+        wh = warehouse.find_warehouse()
+        conn = wh.connect()
+
+        d = drop.drop_inspect(drop_id, conn)
+
+        click.echo(f"Drop: {d.id}")
+        click.echo(f"Date: {d.created_at}")
+        click.echo(f"Actor: {d.actor}")
+        click.echo(f"Message: {d.message}")
+        click.echo()
+
+        total_size = sum(e.size for e in d.entries)
+        size_mb = total_size / (1024 * 1024)
+        click.echo(f"Entries ({len(d.entries)} files, {size_mb:.1f} MB):")
+
+        for e in d.entries:
+            size_kb = e.size / 1024
+            click.echo(f"  {e.id}  {e.filename:<30} {e.relative_path:<40} {size_kb:>8.1f} KB")
+
+        conn.close()
+
+    except drop.DropNotFoundError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except warehouse.WarehouseNotFoundError:
+        click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error inspecting drop: {e}", err=True)
+        sys.exit(1)
 
 
-@originals.command()
-def status():
-    """Show drift between metadata and filesystem."""
-    click.echo("Checking originals/ status...")
-    # TODO: Implement status
+@drop_cmd.command("export")
+@click.argument("drop_id")
+@click.argument("destination", type=click.Path(path_type=Path))
+def drop_export_cmd(drop_id: str, destination: Path):
+    """Export a drop to a destination directory."""
+    try:
+        wh = warehouse.find_warehouse()
 
+        count = drop.drop_export(drop_id, destination, wh.history_dir)
 
-@main.command()
-@click.option("--state", help="Filter by state")
-@click.option("--domain", help="Filter by domain")
-def list(state, domain):
-    """List documents."""
-    click.echo("Listing documents...")
-    # TODO: Implement list
+        click.echo(f"Exported {count} files to {destination}")
 
-
-@main.command()
-@click.argument("document_id")
-def show(document_id):
-    """Show document details and metadata."""
-    click.echo(f"Showing document {document_id}...")
-    # TODO: Implement show
-
-
-@main.command()
-@click.argument("document_id")
-def open(document_id):
-    """Open document in default application."""
-    click.echo(f"Opening document {document_id}...")
-    # TODO: Implement open
+    except drop.DropNotFoundError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except warehouse.WarehouseNotFoundError:
+        click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error exporting drop: {e}", err=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
