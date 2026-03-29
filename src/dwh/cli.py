@@ -269,18 +269,97 @@ triage_group.name = "triage"
 
 @triage_group.command("checkout")
 @click.argument("drop_id", required=False)
-def triage_checkout(drop_id: str | None):
-    """Checkout a drop for triage."""
+@click.option("--force", is_flag=True, help="Restart current drop from scratch")
+def triage_checkout_cmd(drop_id: str | None, force: bool):
+    """Checkout a drop for triage.
+
+    Without arguments, resumes in-progress triage or checks out next from queue.
+    With DROP_ID, checks out a specific drop (with safety check if triage in progress).
+    With --force, restarts current drop from scratch.
+    """
     try:
         wh = warehouse.resolve_warehouse()
         conn = wh.connect()
 
+        # Check current triage state
+        current_drop_id = triage.get_triage_state(conn)
+
+        # Handle --force flag
+        if force:
+            if not current_drop_id:
+                click.echo("Error: No triage in progress to restart.", err=True)
+                sys.exit(1)
+
+            # Get current status
+            status = triage.get_drop_triage_status(current_drop_id, conn)
+            click.echo(f"⚠ Discarding triage progress for {current_drop_id}")
+            click.echo(
+                f"  {status['classified_entries']}/{status['total_entries']} entries already classified"
+            )
+            click.echo()
+
+            # Clear triage state and re-checkout same drop
+            conn.execute("DELETE FROM triage_state")
+            conn.commit()
+            drop_id = current_drop_id
+
+        # Handle explicit drop_id
+        if drop_id and not force:
+            # Safety check: warn if switching drops
+            if current_drop_id and current_drop_id != drop_id:
+                status = triage.get_drop_triage_status(current_drop_id, conn)
+                remaining = status["total_entries"] - status["classified_entries"]
+
+                click.echo(f"⚠ Triage in progress: {current_drop_id}")
+                click.echo(f"  {remaining} entries remain in _triage/")
+                click.echo()
+                click.echo(f"Switch to {drop_id}? This will discard uncommitted work.")
+
+                if not click.confirm("Continue?", default=False):
+                    click.echo("Cancelled.")
+                    conn.close()
+                    return
+
+                # Clear current triage state
+                conn.execute("DELETE FROM triage_state")
+                conn.commit()
+
+        # Handle no drop_id (queue mode)
+        if not drop_id:
+            # Check if resuming in-progress triage
+            if current_drop_id:
+                status = triage.get_drop_triage_status(current_drop_id, conn)
+                remaining = status["total_entries"] - status["classified_entries"]
+
+                click.echo(f"Resuming: {current_drop_id}")
+                click.echo(
+                    f"{remaining} entries remain in _triage/ ({status['classified_entries']} already classified)"
+                )
+
+                conn.close()
+                return
+
+            # Get next from queue
+            next_drop_id = triage.get_next_untriaged_drop(conn)
+            if not next_drop_id:
+                click.echo("✓ All drops triaged! Queue clear.")
+                conn.close()
+                return
+
+            drop_id = next_drop_id
+
+        # Perform checkout
         d = triage.triage_checkout(
             drop_id, wh.root, wh.history_dir, wh.triage_dir, conn
         )
 
-        click.echo(f"Checked out drop {d.id} to triage/")
-        click.echo(f"{len(d.entries)} files ready for triage")
+        # Show checkout info
+        if current_drop_id != drop_id or force:
+            click.echo(f"Checking out: {d.id}")
+            click.echo(f"Message: {d.message}")
+            click.echo()
+
+        click.echo(f"Checked out {len(d.entries)} files to _triage/")
 
         conn.close()
 
@@ -304,26 +383,26 @@ def triage_sync_cmd():
 
         result = triage.triage_sync(wh.root, wh.triage_dir, wh.history_dir, conn)
 
-        if result["classified"] > 0:
-            click.echo(f"✓ Classified {result['classified']} files")
+        if result["filed"] > 0:
+            click.echo(f"✓ Filed: {result['filed']} entries")
+
+        if result["excluded"] > 0:
+            click.echo(f"✓ Excluded: {result['excluded']} entries")
 
         if result["skipped"] > 0:
-            click.echo(f"⚠ Skipped {result['skipped']} files still in triage/")
-            click.echo()
-            click.echo(
-                "Files must be moved from _triage/ to category directories at warehouse root."
-            )
-            click.echo("Example:")
-            click.echo("  mv _triage/file.pdf finance/")
-            click.echo()
-            click.echo(
-                "Triage directory preserved. Run 'dwh triage sync' again after organizing files."
-            )
+            click.echo(f"→ {result['skipped']} entries remain in _triage/")
 
         if result["ambiguous"]:
             click.echo("⚠ Ambiguous files (skipped):")
             for path in result["ambiguous"]:
                 click.echo(f"  - {path}")
+
+        # Check if drop is complete
+        if result["skipped"] == 0:
+            click.echo()
+            drop_id = triage.get_triage_state(conn)
+            if not drop_id:  # Triage was cleared
+                click.echo("Triage complete!")
 
         conn.close()
 
@@ -426,6 +505,110 @@ def triage_merge_cmd():
     except triage.NoTriageInProgressError:
         click.echo("Error: No triage in progress.", err=True)
         sys.exit(1)
+    except warehouse.WarehouseNotFoundError:
+        click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@triage_group.command("status")
+def triage_status_cmd():
+    """Show triage queue status."""
+    try:
+        wh = warehouse.resolve_warehouse()
+        conn = wh.connect()
+
+        # Get current triage state
+        current_drop_id = triage.get_triage_state(conn)
+
+        # Get all drops in LIFO order (newest first)
+        drops = conn.execute(
+            """SELECT id, message, created_at FROM drops ORDER BY created_at DESC"""
+        ).fetchall()
+
+        if not drops:
+            click.echo("No drops in warehouse.")
+            return
+
+        # Display queue
+        click.echo(f"Triage Queue ({len(drops)} drops):")
+        click.echo()
+
+        # Count by status for summary
+        complete_count = 0
+        complete_entries = 0
+        in_progress_count = 0
+        in_progress_classified = 0
+        in_progress_total = 0
+        pending_count = 0
+        pending_entries = 0
+
+        for drop_row in drops:
+            drop_id = drop_row["id"]
+            message = drop_row["message"]
+            status_info = triage.get_drop_triage_status(drop_id, conn)
+
+            total = status_info["total_entries"]
+            classified = status_info["classified_entries"]
+            status = status_info["status"]
+
+            # Status indicator
+            if status == "complete":
+                indicator = "✓"
+                complete_count += 1
+                complete_entries += total
+            elif status == "in_progress":
+                if drop_id == current_drop_id:
+                    indicator = "→"
+                else:
+                    indicator = "→"
+                in_progress_count += 1
+                in_progress_classified += classified
+                in_progress_total += total
+            else:  # pending
+                indicator = "⏳"
+                pending_count += 1
+                pending_entries += total
+
+            # Format entry count
+            if status == "complete":
+                entry_str = f"({total}/{total} complete)"
+            elif status == "in_progress":
+                entry_str = f"({classified}/{total} classified)"
+            else:  # pending
+                entry_str = f"({total} pending)"
+
+            # In progress marker
+            progress_marker = " ← IN PROGRESS" if drop_id == current_drop_id else ""
+
+            # Truncate drop_id for display
+            drop_id_short = drop_id[:23] if len(drop_id) > 23 else drop_id
+
+            # Truncate message for display
+            message_short = message[:30] if len(message) > 30 else message
+
+            click.echo(
+                f"{indicator} {drop_id_short:<23} {message_short:<30} {entry_str}{progress_marker}"
+            )
+
+        # Summary
+        click.echo()
+        click.echo("Summary:")
+        if complete_count > 0:
+            click.echo(
+                f"- Complete: {complete_count} drops ({complete_entries} entries)"
+            )
+        if in_progress_count > 0:
+            click.echo(
+                f"- In progress: {in_progress_count} drop(s) ({in_progress_classified}/{in_progress_total} entries)"
+            )
+        if pending_count > 0:
+            click.echo(f"- Pending: {pending_count} drops ({pending_entries} entries)")
+
+        conn.close()
+
     except warehouse.WarehouseNotFoundError:
         click.echo("Error: Not in a warehouse.", err=True)
         sys.exit(1)

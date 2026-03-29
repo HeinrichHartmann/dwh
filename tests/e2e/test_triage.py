@@ -29,9 +29,9 @@ class TestTriageCheckout:
         result = run_cli(runner, ["triage", "checkout"])
 
         assert result.exit_code == 0
-        assert "Checked out drop" in result.output
+        assert "Checking out:" in result.output or "Checked out" in result.output
         assert drop_id in result.output
-        assert "4 files ready for triage" in result.output
+        assert "4 files" in result.output
 
     def test_triage_checkout_specific_drop(self, runner, tmp_warehouse, single_file):
         """Checkout specific drop by ID."""
@@ -66,19 +66,22 @@ class TestTriageCheckout:
         marker = tmp_warehouse / "_triage" / "marker.txt"
         marker.write_text("marker")
 
-        # Import another drop and triage again
-        run_cli(runner, ["drop", "import", "-m", "Second", str(single_file)])
-        run_cli(runner, ["triage", "checkout"])
+        # Import another drop and triage again (explicit checkout to bypass resume)
+        result = run_cli(
+            runner, ["drop", "import", "-m", "Second", str(single_file)], input="y\n"
+        )
+        drop_id = extract_drop_id(result.output)
+        run_cli(runner, ["triage", "checkout", drop_id], input="y\n")  # Confirm switch
 
         # Marker should be gone
         assert not marker.exists()
 
     def test_triage_without_drops_fails(self, runner, tmp_warehouse):
-        """Triage without any drops should fail."""
+        """Triage without any drops shows queue clear message."""
         result = run_cli(runner, ["triage", "checkout"])
 
-        assert result.exit_code != 0
-        assert "no drops" in result.output.lower() or "error" in result.output.lower()
+        assert result.exit_code == 0
+        assert "All drops triaged!" in result.output or "Queue clear" in result.output
 
 
 class TestTriageSync:
@@ -101,7 +104,7 @@ class TestTriageSync:
         result = run_cli(runner, ["triage", "sync"])
 
         assert result.exit_code == 0
-        assert "Classified 1 files" in result.output
+        assert "Filed: 1 entries" in result.output
 
     def test_triage_sync_creates_classification_record(
         self, runner, tmp_warehouse, single_file
@@ -244,8 +247,8 @@ class TestTriageSync:
         result = run_cli(runner, ["triage", "sync"])
 
         assert result.exit_code == 0
-        assert "Classified 1 files" in result.output
-        assert "Skipped 3 files" in result.output
+        assert "Filed: 1 entries" in result.output
+        assert "3 entries remain in _triage/" in result.output
 
 
 class TestTriageWorkflow:
@@ -283,7 +286,7 @@ class TestTriageWorkflow:
         # 4. Sync
         result = run_cli(runner, ["triage", "sync"])
         assert result.exit_code == 0
-        assert "Classified 4 files" in result.output
+        assert "Filed: 4 entries" in result.output
 
         # 5. Verify results
         assert not triage_dir.exists()
@@ -376,7 +379,7 @@ class TestTriageSkippedFiles:
         result = run_cli(runner, ["triage", "sync"])
 
         assert result.exit_code == 0
-        assert "Skipped 1 files" in result.output
+        assert "1 entries remain in _triage/" in result.output
 
         # Triage directory should still exist (not deleted)
         assert triage_dir.exists()
@@ -410,7 +413,7 @@ class TestTriageSkippedFiles:
         result = run_cli(runner, ["triage", "sync"])
 
         assert result.exit_code == 0
-        assert "Classified 1 files" in result.output
+        assert "Filed: 1 entries" in result.output
 
         # Triage directory should be deleted
         assert not triage_dir.exists()
@@ -536,13 +539,16 @@ class TestTriageSuggestMerge:
         run_cli(runner, ["drop", "import", "-m", "First", str(sample_files)])
         run_cli(runner, ["triage", "checkout"])
 
-        # Classify 2 files manually
+        # Classify 2 files manually, delete the others to complete triage
         finance_dir = tmp_warehouse / "finance"
         finance_dir.mkdir(parents=True)
         triage_dir = tmp_warehouse / "_triage"
 
         (triage_dir / "file1.txt").rename(finance_dir / "file1.txt")
         (triage_dir / "file2.txt").rename(finance_dir / "file2.txt")
+        # Delete the other files to complete the first triage
+        (triage_dir / "subdir" / "nested.txt").unlink()
+        (triage_dir / "subdir" / "deeper" / "deep.txt").unlink()
         run_cli(runner, ["triage", "sync"])
 
         # Second: import all files again (including newly classified ones)
@@ -559,28 +565,29 @@ class TestTriageSuggestMerge:
 
         run_cli(runner, ["triage", "checkout"])
 
-        # Suggest - should auto-classify 2 known files
+        # Suggest - should auto-classify all 4 files (2 to finance, 2 to tombstone)
         result = run_cli(runner, ["triage", "suggest"])
 
         assert result.exit_code == 0
-        assert "2 files auto-classified" in result.output
-        assert "2 files remain in _triage/" in result.output
+        assert "4 files auto-classified" in result.output
+        assert "2 to finance/" in result.output
+        assert "2 to /" in result.output  # Tombstoned files (empty category)
 
         # Merge staged files
         result = run_cli(runner, ["triage", "merge"])
 
         assert result.exit_code == 0
-        assert "Merged 2 files" in result.output
+        assert "Merged 4 files" in result.output
 
-        # Check files are in warehouse
+        # Check files are in warehouse - only the finance files should be visible
         assert (finance_dir / "file1.txt").exists()
         assert (finance_dir / "file2.txt").exists()
 
-        # Triage still has 2 unknown files
+        # Triage should be clear (all files auto-classified)
         triage_dir = tmp_warehouse / "_triage"
-        assert triage_dir.exists()
-        remaining = list(triage_dir.rglob("*.txt"))
-        assert len(remaining) == 2
+        if triage_dir.exists():
+            remaining = list(triage_dir.rglob("*.txt"))
+            assert len(remaining) == 0
 
     def test_suggest_without_triage_fails(self, runner, tmp_warehouse):
         """Suggest without active triage should fail."""
@@ -600,3 +607,345 @@ class TestTriageSuggestMerge:
 
         assert result.exit_code == 0
         assert "No files in staging" in result.output
+
+
+class TestTriageTombstones:
+    """Test tombstone classification for excluded entries (ADR-006)."""
+
+    def test_deleted_file_creates_tombstone(self, runner, tmp_warehouse, sample_files):
+        """Deleting file from triage creates tombstone document."""
+        # Import and checkout
+        result = run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
+        drop_id = extract_drop_id(result.output)
+        run_cli(runner, ["triage", "checkout"])
+
+        # Delete a file from triage (exclude it)
+        triage_dir = tmp_warehouse / "_triage"
+        (triage_dir / "file1.txt").unlink()
+
+        # Sync should create tombstone
+        result = run_cli(runner, ["triage", "sync"])
+
+        assert result.exit_code == 0
+        assert "Excluded: 1 entries" in result.output
+        assert "3 entries remain in _triage/" in result.output
+
+        # Check database has tombstone document (category = '')
+        from dwh import db
+
+        conn = db.connect(tmp_warehouse / ".dwh" / "dwh.db")
+        doc = conn.execute(
+            """SELECT d.* FROM documents d
+               JOIN entries e ON d.entry_id = e.id
+               WHERE e.drop_id = ? AND d.name = 'file1.txt'""",
+            (drop_id,),
+        ).fetchone()
+
+        assert doc is not None
+        assert doc["category"] == ""  # Tombstone marker
+        assert doc["name"] == "file1.txt"
+
+        conn.close()
+
+    def test_filed_and_excluded_in_same_sync(self, runner, tmp_warehouse, sample_files):
+        """Can file some entries and exclude others in same sync."""
+        # Import and checkout
+        run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
+        run_cli(runner, ["triage", "checkout"])
+
+        # File one, exclude one
+        triage_dir = tmp_warehouse / "_triage"
+        finance_dir = tmp_warehouse / "finance"
+        finance_dir.mkdir(parents=True)
+
+        (triage_dir / "file1.txt").rename(finance_dir / "invoice.txt")
+        (triage_dir / "file2.txt").unlink()  # Exclude
+
+        # Sync
+        result = run_cli(runner, ["triage", "sync"])
+
+        assert result.exit_code == 0
+        assert "Filed: 1 entries" in result.output
+        assert "Excluded: 1 entries" in result.output
+        assert "2 entries remain" in result.output
+
+    def test_excluded_file_counts_as_classified(
+        self, runner, tmp_warehouse, sample_files
+    ):
+        """Excluded entries count toward drop completion."""
+        # Import and checkout
+        run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
+        run_cli(runner, ["triage", "checkout"])
+
+        # Delete all files (exclude all)
+        triage_dir = tmp_warehouse / "_triage"
+        for file in triage_dir.rglob("*.txt"):
+            file.unlink()
+
+        # Sync should complete drop
+        result = run_cli(runner, ["triage", "sync"])
+
+        assert result.exit_code == 0
+        assert "Excluded: 4 entries" in result.output
+        assert "Triage complete!" in result.output
+
+        # Triage directory should be cleared
+        assert not triage_dir.exists()
+
+
+class TestTriageQueue:
+    """Test triage queue logic (ADR-006)."""
+
+    def test_checkout_without_args_resumes(self, runner, tmp_warehouse, sample_files):
+        """Checkout without args resumes in-progress triage."""
+        # Import and checkout
+        run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
+        run_cli(runner, ["triage", "checkout"])
+
+        # File one entry
+        triage_dir = tmp_warehouse / "_triage"
+        finance_dir = tmp_warehouse / "finance"
+        finance_dir.mkdir(parents=True)
+        (triage_dir / "file1.txt").rename(finance_dir / "invoice.txt")
+
+        run_cli(runner, ["triage", "sync"])
+
+        # Checkout again without args - should resume
+        result = run_cli(runner, ["triage", "checkout"])
+
+        assert result.exit_code == 0
+        assert "Resuming:" in result.output
+        assert "3 entries remain" in result.output
+        assert "1 already classified" in result.output
+
+    def test_checkout_without_args_picks_next_from_queue(
+        self, runner, tmp_warehouse, sample_files
+    ):
+        """Checkout without args picks next incomplete drop from LIFO queue."""
+        import tempfile
+        import shutil
+
+        # Import two drops
+        run_cli(runner, ["drop", "import", "-m", "First drop", str(sample_files)])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            copied_samples = shutil.copytree(sample_files, tmpdir + "/samples")
+            run_cli(
+                runner,
+                ["drop", "import", "-m", "Second drop", str(copied_samples)],
+                input="y\n",
+            )
+
+        # Checkout should pick newest (Second drop)
+        result = run_cli(runner, ["triage", "checkout"])
+
+        assert result.exit_code == 0
+        assert "Checking out:" in result.output
+        assert "Second drop" in result.output
+
+    def test_checkout_all_complete_shows_clear_message(
+        self, runner, tmp_warehouse, single_file
+    ):
+        """Checkout when all drops complete shows queue clear message."""
+        # Import and complete triage
+        run_cli(runner, ["drop", "import", "-m", "Test", str(single_file)])
+        run_cli(runner, ["triage", "checkout"])
+
+        triage_dir = tmp_warehouse / "_triage"
+        finance_dir = tmp_warehouse / "finance"
+        finance_dir.mkdir(parents=True)
+        (triage_dir / single_file.name).rename(finance_dir / "doc.txt")
+
+        run_cli(runner, ["triage", "sync"])
+
+        # Try checkout again - queue should be clear
+        result = run_cli(runner, ["triage", "checkout"])
+
+        assert result.exit_code == 0
+        assert "All drops triaged!" in result.output
+        assert "Queue clear" in result.output
+
+    def test_checkout_with_explicit_id_shows_safety_warning(
+        self, runner, tmp_warehouse, sample_files
+    ):
+        """Checkout with explicit drop_id shows safety warning if triage in progress."""
+        import tempfile
+        import shutil
+
+        # Import two drops
+        result = run_cli(runner, ["drop", "import", "-m", "First", str(sample_files)])
+        first_drop_id = extract_drop_id(result.output)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            copied_samples = shutil.copytree(sample_files, tmpdir + "/samples")
+            run_cli(
+                runner,
+                ["drop", "import", "-m", "Second", str(copied_samples)],
+                input="y\n",
+            )
+
+        # Checkout second (newest)
+        run_cli(runner, ["triage", "checkout"])
+
+        # Try to checkout first explicitly - should show warning
+        result = run_cli(
+            runner, ["triage", "checkout", first_drop_id], input="n\n"
+        )  # Decline
+
+        assert result.exit_code == 0
+        assert "Triage in progress:" in result.output
+        assert "entries remain in _triage/" in result.output
+        assert "Cancelled" in result.output
+
+    def test_checkout_force_restarts_from_scratch(
+        self, runner, tmp_warehouse, sample_files
+    ):
+        """Checkout --force restarts current drop from scratch."""
+        # Import and checkout
+        run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
+        run_cli(runner, ["triage", "checkout"])
+
+        # File one entry
+        triage_dir = tmp_warehouse / "_triage"
+        finance_dir = tmp_warehouse / "finance"
+        finance_dir.mkdir(parents=True)
+        (triage_dir / "file1.txt").rename(finance_dir / "invoice.txt")
+
+        run_cli(runner, ["triage", "sync"])
+
+        # Force restart
+        result = run_cli(runner, ["triage", "checkout", "--force"])
+
+        assert result.exit_code == 0
+        assert "Discarding triage progress" in result.output
+        assert "1/4 entries already classified" in result.output
+        assert "Checked out 4 files" in result.output
+
+        # All files should be back in triage
+        assert (triage_dir / "file1.txt").exists()
+
+
+class TestTriageStatus:
+    """Test triage status command (ADR-006)."""
+
+    def test_status_shows_single_pending_drop(
+        self, runner, tmp_warehouse, sample_files
+    ):
+        """Status shows pending drop."""
+        run_cli(runner, ["drop", "import", "-m", "Test drop", str(sample_files)])
+
+        result = run_cli(runner, ["triage", "status"])
+
+        assert result.exit_code == 0
+        assert "Triage Queue (1 drops)" in result.output
+        assert "⏳" in result.output  # Pending indicator
+        assert "Test drop" in result.output
+        assert "(4 pending)" in result.output
+        assert "Pending: 1 drops (4 entries)" in result.output
+
+    def test_status_shows_in_progress_drop(self, runner, tmp_warehouse, sample_files):
+        """Status shows in-progress drop with marker."""
+        run_cli(runner, ["drop", "import", "-m", "Test drop", str(sample_files)])
+        run_cli(runner, ["triage", "checkout"])
+
+        # File one entry
+        triage_dir = tmp_warehouse / "_triage"
+        finance_dir = tmp_warehouse / "finance"
+        finance_dir.mkdir(parents=True)
+        (triage_dir / "file1.txt").rename(finance_dir / "invoice.txt")
+
+        run_cli(runner, ["triage", "sync"])
+
+        # Check status
+        result = run_cli(runner, ["triage", "status"])
+
+        assert result.exit_code == 0
+        assert "→" in result.output  # In progress indicator
+        assert "(1/4 classified)" in result.output
+        assert "← IN PROGRESS" in result.output
+        assert "In progress: 1 drop(s) (1/4 entries)" in result.output
+
+    def test_status_shows_complete_drop(self, runner, tmp_warehouse, single_file):
+        """Status shows complete drop."""
+        run_cli(runner, ["drop", "import", "-m", "Test", str(single_file)])
+        run_cli(runner, ["triage", "checkout"])
+
+        # File the entry
+        triage_dir = tmp_warehouse / "_triage"
+        finance_dir = tmp_warehouse / "finance"
+        finance_dir.mkdir(parents=True)
+        (triage_dir / single_file.name).rename(finance_dir / "doc.txt")
+
+        run_cli(runner, ["triage", "sync"])
+
+        # Check status
+        result = run_cli(runner, ["triage", "status"])
+
+        assert result.exit_code == 0
+        assert "✓" in result.output  # Complete indicator
+        assert "(1/1 complete)" in result.output
+        assert "Complete: 1 drops (1 entries)" in result.output
+
+    def test_status_shows_mixed_queue(self, runner, tmp_warehouse, sample_files):
+        """Status shows queue with multiple drops in different states."""
+        import tempfile
+        import shutil
+
+        # Import three drops
+        run_cli(runner, ["drop", "import", "-m", "Drop 1", str(sample_files)])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Second drop
+            copied = shutil.copytree(sample_files, tmpdir + "/drop2")
+            run_cli(
+                runner, ["drop", "import", "-m", "Drop 2", str(copied)], input="y\n"
+            )
+
+            # Third drop
+            copied2 = shutil.copytree(sample_files, tmpdir + "/drop3")
+            run_cli(
+                runner, ["drop", "import", "-m", "Drop 3", str(copied2)], input="y\n"
+            )
+
+        # Complete drop 1
+        run_cli(runner, ["triage", "checkout"])
+        triage_dir = tmp_warehouse / "_triage"
+        for file in triage_dir.rglob("*.txt"):
+            file.unlink()
+        run_cli(runner, ["triage", "sync"])
+
+        # Start drop 2 (in progress)
+        run_cli(runner, ["triage", "checkout"])
+        finance_dir = tmp_warehouse / "finance"
+        finance_dir.mkdir(parents=True)
+        (triage_dir / "file1.txt").rename(finance_dir / "invoice.txt")
+        run_cli(runner, ["triage", "sync"])
+
+        # Drop 3 remains pending
+
+        # Check status
+        result = run_cli(runner, ["triage", "status"])
+
+        assert result.exit_code == 0
+        assert "Triage Queue (3 drops)" in result.output
+
+        # Should see all three states
+        output_lines = result.output.split("\n")
+        indicators = [
+            line[:1] for line in output_lines if line and line[0] in ["✓", "→", "⏳"]
+        ]
+        assert "✓" in indicators  # Complete
+        assert "→" in indicators  # In progress
+        assert "⏳" in indicators  # Pending
+
+        # Summary should show all states
+        assert "Complete: 1 drops" in result.output
+        assert "In progress: 1 drop(s)" in result.output
+        assert "Pending: 1 drops" in result.output
+
+    def test_status_with_no_drops(self, runner, tmp_warehouse):
+        """Status with no drops shows empty message."""
+        result = run_cli(runner, ["triage", "status"])
+
+        assert result.exit_code == 0
+        assert "No drops in warehouse" in result.output

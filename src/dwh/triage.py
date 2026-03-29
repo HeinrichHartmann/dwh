@@ -98,9 +98,11 @@ def triage_sync(
     Sync triage: match files, create classifications, update database.
 
     Per ADR-003, scans warehouse root for classified files (skips system dirs).
+    Per ADR-006, creates tombstone documents for deleted files (excluded by user).
 
     Returns: {
-        "classified": int,
+        "filed": int,
+        "excluded": int,
         "skipped": int,
         "ambiguous": list[str]
     }
@@ -117,13 +119,15 @@ def triage_sync(
         "SELECT * FROM entries WHERE drop_id = ?", (triaging_drop_id,)
     ).fetchall()
 
-    # Build entry lookup by hash
+    # Build entry lookup by hash and by id
     entries_by_hash = {}
+    entries_by_id = {}
     for entry in entries:
         h = entry["blob_hash"]
         if h not in entries_by_hash:
             entries_by_hash[h] = []
         entries_by_hash[h].append(entry)
+        entries_by_id[entry["id"]] = entry
 
     # Scan triage/ for remaining files
     triage_files = {}
@@ -135,8 +139,8 @@ def triage_sync(
                 triage_files[str(rel_path)] = file_hash
 
     # Scan warehouse root for classified files (ADR-003: categories at root)
-    # Skip system directories: .dwh, _history, _triage
-    system_dirs = {".dwh", "_history", "_triage"}
+    # Skip system directories: .dwh, _history, _triage, _staging
+    system_dirs = {".dwh", "_history", "_triage", "_staging"}
     document_files = {}
 
     for item in warehouse_root.iterdir():
@@ -153,7 +157,7 @@ def triage_sync(
                     document_files[str(rel_path)] = (file_hash, file)
 
     # Match files: find entries that moved from triage/ to warehouse root
-    matches = []
+    filed_matches = []
     ambiguous = []
 
     for doc_path_str, (doc_hash, doc_file) in document_files.items():
@@ -179,7 +183,7 @@ def triage_sync(
             category = str(doc_path.parent) if doc_path.parent != Path(".") else ""
             name = doc_path.name
 
-            matches.append(
+            filed_matches.append(
                 TriageMatch(
                     entry_id=entry["id"],
                     triage_path=triage_dir / entry["relative_path"],
@@ -192,13 +196,40 @@ def triage_sync(
             # Ambiguous: multiple entries with same hash
             ambiguous.append(doc_path_str)
 
-    # Create classification record in history if we have matches
+    # Find excluded entries (ADR-006: deleted from triage = excluded)
+    # Entry is excluded if: not already classified, not in warehouse, not in triage
+    excluded_entries = []
+    filed_entry_ids = {match.entry_id for match in filed_matches}
+
+    for entry in entries:
+        # Check if already has document
+        existing_doc = conn.execute(
+            "SELECT id FROM documents WHERE entry_id = ?", (entry["id"],)
+        ).fetchone()
+        if existing_doc:
+            continue  # Already classified
+
+        # Check if in warehouse (filed this sync)
+        if entry["id"] in filed_entry_ids:
+            continue  # Being filed this sync
+
+        # Check if still in triage
+        entry_rel_path = entry["relative_path"]
+        if entry_rel_path in triage_files:
+            continue  # Still in triage
+
+        # Not classified, not filed, not in triage -> excluded (deleted by user)
+        excluded_entries.append(entry)
+
+    # Create classification records
     classifications = []
-    if matches:
+
+    # Create documents for filed entries
+    if filed_matches or excluded_entries:
         seq_num = history_module.get_next_history_number(history_dir)
         classify_file = history_dir / f"{seq_num:03d}_classify.json"
 
-        for match in matches:
+        for match in filed_matches:
             # Insert document record
             cursor = conn.execute(
                 """INSERT INTO documents (entry_id, name, category)
@@ -213,6 +244,24 @@ def triage_sync(
                     "document_id": document_id,
                     "category": match.category,
                     "name": match.name,
+                }
+            )
+
+        # Create tombstone documents for excluded entries
+        for entry in excluded_entries:
+            cursor = conn.execute(
+                """INSERT INTO documents (entry_id, name, category)
+                   VALUES (?, ?, '')""",
+                (entry["id"], entry["filename"]),
+            )
+            document_id = cursor.lastrowid
+
+            classifications.append(
+                {
+                    "entry_id": entry["id"],
+                    "document_id": document_id,
+                    "category": "",  # Tombstone marker
+                    "name": entry["filename"],
                 }
             )
 
@@ -243,7 +292,8 @@ def triage_sync(
         pass
 
     return {
-        "classified": len(matches),
+        "filed": len(filed_matches),
+        "excluded": len(excluded_entries),
         "skipped": len(triage_files),
         "ambiguous": ambiguous,
     }
@@ -253,6 +303,62 @@ def get_triage_state(conn: sqlite3.Connection) -> str | None:
     """Get the drop_id currently being triaged, or None."""
     row = conn.execute("SELECT drop_id FROM triage_state WHERE id = 1").fetchone()
     return row["drop_id"] if row else None
+
+
+def get_drop_triage_status(drop_id: str, conn: sqlite3.Connection) -> dict:
+    """Get triage status for a drop.
+
+    Returns: {
+        "status": "complete" | "in_progress" | "pending",
+        "total_entries": int,
+        "classified_entries": int,
+    }
+    """
+    # Count total entries
+    total = conn.execute(
+        "SELECT COUNT(*) as count FROM entries WHERE drop_id = ?", (drop_id,)
+    ).fetchone()["count"]
+
+    # Count classified entries (includes both filed and excluded)
+    classified = conn.execute(
+        """SELECT COUNT(*) as count
+           FROM documents d
+           JOIN entries e ON d.entry_id = e.id
+           WHERE e.drop_id = ?""",
+        (drop_id,),
+    ).fetchone()["count"]
+
+    # Determine status
+    if classified == 0:
+        status = "pending"
+    elif classified < total:
+        status = "in_progress"
+    else:
+        status = "complete"
+
+    return {
+        "status": status,
+        "total_entries": total,
+        "classified_entries": classified,
+    }
+
+
+def get_next_untriaged_drop(conn: sqlite3.Connection) -> str | None:
+    """Get next drop from triage queue (LIFO: newest first).
+
+    Returns drop_id of next incomplete drop, or None if queue is empty.
+    """
+    # Get all drops ordered by creation (newest first)
+    drops = conn.execute("""SELECT id FROM drops ORDER BY created_at DESC""").fetchall()
+
+    for drop_row in drops:
+        drop_id = drop_row["id"]
+        status = get_drop_triage_status(drop_id, conn)
+
+        if status["status"] != "complete":
+            return drop_id
+
+    return None  # All drops complete
 
 
 def get_blob_classification(blob_hash: str, conn: sqlite3.Connection) -> str | None:
