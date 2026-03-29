@@ -24,3 +24,9 @@ dwh = "dwh:main"
 [build-system]
 requires = ["uv_build>=0.9.26,<0.12"]
 build-backend = "uv_build"
+
+[tool.ruff]
+# Ignore F541: f-string without any placeholders
+# Justification: Using f-strings consistently improves readability and makes future
+# interpolation easier, even when there are currently no placeholders.
+lint.ignore = ["F541"]
