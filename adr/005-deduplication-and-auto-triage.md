@@ -63,34 +63,74 @@ _triage/    →  [suggest]  →    _staging/    →  [merge]  →   warehouse ro
 
 #### Classification Memory
 
+For the main v1 use case, assume that many documents are uniquely determined by
+their content. In other words:
+
+```text
+blob_hash -> suggested category
+```
+
+This fits document types like invoices, statements, receipts, and contracts,
+where re-importing the same bytes usually means "this is the same document
+again."
+
 Track blob classifications to enable auto-triage:
 
 ```sql
 CREATE TABLE blob_classifications (
     blob_hash TEXT PRIMARY KEY,
-    category TEXT NOT NULL,           -- "finance/taxes/2024"
-    last_seen_name TEXT,              -- "invoice.pdf" (hint for display)
-    first_classified_at TEXT,
-    last_classified_at TEXT,
-    classification_count INTEGER
+    category TEXT NOT NULL,           -- suggested category (last wins)
+    last_seen_name TEXT,              -- display hint only
+    first_classified_at TEXT NOT NULL,
+    last_classified_at TEXT NOT NULL,
+    classification_count INTEGER NOT NULL DEFAULT 1
 );
 ```
 
+**V1 Simplification:** This table uses a simple "last classification wins" strategy.
+If the same blob is classified to different categories over time, the most recent
+classification becomes the suggestion. This works well for the common case where
+identical content represents the same document.
+
+**Important:** `blob_classifications` is a derived suggestion cache, not the
+source of truth. The source of truth remains the append-only history of
+classification events.
+
+**What v1 Does NOT Address:**
+
+The following cases are explicitly out of scope for v1 and will be addressed in
+future versions:
+
+1. **Ambiguous blobs:** When the same content hash should go to different
+   categories depending on context (e.g., a generic template file used in multiple
+   projects)
+
+2. **Entry-level provenance:** Distinguishing between two imports of the same blob
+   with different metadata/context
+
+3. **Conflict detection/resolution:** No UI for resolving conflicting
+   classifications
+
+For these cases, a future version will likely use an **editable filing table** - a
+table-based classification format that can be explicitly edited to describe the
+mapping between files and categories with full context. This would replace or
+augment the simple blob → category cache.
+
 #### Matching Strategy
 
-Auto-classify files using two strategies:
+**V1: Blob Identity Match Only**
 
-**A. Blob Identity Match (Primary)**
-- If blob hash exists in `blob_classifications`, use stored category
+- If blob hash exists in `blob_classifications`, use the stored category as a
+  suggestion
 - Works even if filename/path changes
 - Content-based deduplication
+- Simple rule: last classification wins
 
-**B. Entry Path Match (Secondary - Future)**
+**V2+: Entry Path Match (Future)**
 - If relative path matches previous entry path from same import root
 - Example: `docs/invoice.pdf` always goes to `finance/taxes/`
 - Useful for recurring directory structures
-
-**Priority:** Start with blob identity only. Entry path matching is future enhancement.
+- Requires tracking import context alongside classifications
 
 #### Suggest Command Behavior
 
@@ -130,14 +170,14 @@ def triage_suggest(triage_dir, staging_dir, conn):
         ).fetchone()
 
         if memory:
-            # Known blob - auto-classify
+            # Known blob - auto-classify to staging
             category = memory['category']
             target = staging_dir / category / file.name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(file, target)
             auto_classified.append((file.name, category))
         else:
-            # Unknown blob - leave in triage
+            # Unknown blob - leave in triage for manual handling
             needs_manual.append(file)
 
     return {
@@ -181,7 +221,7 @@ def triage_merge(staging_dir, warehouse_root, history_dir, conn):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(file, target)
 
-        # Record classification
+        # Record classification by blob hash
         hash = compute_hash(target)
         classifications.append({
             'blob_hash': hash,
@@ -192,9 +232,19 @@ def triage_merge(staging_dir, warehouse_root, history_dir, conn):
     # Write classification event to history
     write_classification_event(classifications, history_dir)
 
-    # Update blob classification memory
+    # Update blob classification memory (last wins)
     for c in classifications:
-        update_blob_classification(c, conn)
+        conn.execute("""
+            INSERT INTO blob_classifications
+            (blob_hash, category, last_seen_name, first_classified_at,
+             last_classified_at, classification_count)
+            VALUES (?, ?, ?, ?, ?, 1)
+            ON CONFLICT(blob_hash) DO UPDATE SET
+                category = excluded.category,
+                last_seen_name = excluded.last_seen_name,
+                last_classified_at = excluded.last_classified_at,
+                classification_count = classification_count + 1
+        """, (c['blob_hash'], c['category'], c['name'], now(), now()))
 
     # Clear staging
     shutil.rmtree(staging_dir)
@@ -205,18 +255,16 @@ def triage_merge(staging_dir, warehouse_root, history_dir, conn):
 Classification memory is updated during:
 
 1. **Manual triage sync** (existing workflow):
-   ```python
-   # User moves files in _triage/ to categories
-   # On sync, record classifications
-   ```
+   - User moves files in `_triage/` to categories
+   - On sync, record classifications and update memory
 
 2. **Merge command** (new workflow):
-   ```python
-   # Files in _staging/ merged to categories
-   # Record classifications
-   ```
+   - Files in `_staging/` merged to warehouse
+   - Record classifications and update memory
 
-Both update `blob_classifications` table identically.
+Both workflows update `blob_classifications` table using the same "last wins"
+strategy. The classification events written to history track the full provenance
+as before.
 
 ## Workflow Examples
 
@@ -377,7 +425,8 @@ If 80%+ of files in a directory auto-classify to same category, suggest it for r
 
 ### Conflict Resolution
 
-If blob classified to different categories over time, prompt user:
+If blob classified to different categories over time, mark it as conflicted and
+disable auto-triage for that blob. The user can then resolve it manually:
 ```
 ⚠ invoice.pdf has been classified differently:
   2024-01-15: finance/taxes/2024/
@@ -397,18 +446,20 @@ Choose destination:
 - Staging area allows review before committing
 - Drop duplicate detection prevents accidents
 - Content-based memory works even with filename changes
+- Keeps the main case simple: identical content usually implies same document
 
 **Disadvantages:**
 - More complexity in triage workflow
 - Additional `_staging/` directory to understand
 - Memory table requires maintenance
-- Incorrect auto-classification requires manual override
+- V1 doesn't handle ambiguous blobs (same content, different intended categories)
 
 **Mitigations:**
 - Staging area allows review before merge
-- User can move files between `_staging/` and `_triage/`
+- User can move files between `_staging/` and `_triage/` to adjust
 - Classification memory can be cleared/reset if needed
 - Clear command names: suggest (tentative) → merge (commit)
+- Future versions will add editable filing table for complex cases
 
 ## Decision
 
@@ -417,6 +468,10 @@ Implement drop duplicate detection and auto-triage with staging workflow using t
 - `dwh triage merge` - Apply `_staging/` to warehouse
 
 Start with blob identity matching only. Entry path matching is future work.
+
+Treat blob classification memory as a derived suggestion cache. Final
+classification history continues to be recorded by `entry_id`, and blobs with
+conflicting prior classifications are excluded from auto-triage.
 
 ## References
 
