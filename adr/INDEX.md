@@ -8,6 +8,7 @@ This directory contains Architecture Decision Records (ADRs) for DWH.
 |-----|-------|--------|
 | [001](001-testing-strategy.md) | Testing Strategy | Accepted |
 | [002](002-drop-storage-implementation.md) | Drop Storage Implementation | Proposed |
+| [003](003-warehouse-filesystem-layout.md) | Warehouse Filesystem Layout | Accepted |
 
 ## Format
 
