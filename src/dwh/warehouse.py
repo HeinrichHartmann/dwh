@@ -26,16 +26,20 @@ class WarehouseNotFoundError(WarehouseError):
 
 
 class Warehouse:
-    """Warehouse interface providing paths and database access."""
+    """Warehouse interface providing paths and database access.
+
+    Per ADR-003, the warehouse root IS the archive.
+    Categories live at root, system directories use underscore prefix.
+    """
 
     def __init__(self, root: Path):
         self.root = root.resolve()
         self.dwh_dir = self.root / ".dwh"
         self.db_path = self.dwh_dir / "dwh.db"
-        self.history_dir = self.dwh_dir / "history"
         self.config_path = self.dwh_dir / "config.toml"
-        self.triage_dir = self.root / "triage"
-        self.documents_dir = self.root / "documents"
+        # ADR-003: System directories at root with underscore prefix
+        self.history_dir = self.root / "_history"
+        self.triage_dir = self.root / "_triage"
 
     def exists(self) -> bool:
         """Check if warehouse is initialized."""

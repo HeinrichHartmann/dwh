@@ -85,9 +85,11 @@ def triage_checkout(drop_id: str | None, warehouse_root: Path, history_dir: Path
     return d
 
 
-def triage_sync(warehouse_root: Path, triage_dir: Path, documents_dir: Path, history_dir: Path, conn: sqlite3.Connection) -> dict:
+def triage_sync(warehouse_root: Path, triage_dir: Path, history_dir: Path, conn: sqlite3.Connection) -> dict:
     """
     Sync triage: match files, create classifications, update database.
+
+    Per ADR-003, scans warehouse root for classified files (skips system dirs).
 
     Returns: {
         "classified": int,
@@ -125,16 +127,25 @@ def triage_sync(warehouse_root: Path, triage_dir: Path, documents_dir: Path, his
                 rel_path = file.relative_to(triage_dir)
                 triage_files[str(rel_path)] = file_hash
 
-    # Scan documents/ for new files
+    # Scan warehouse root for classified files (ADR-003: categories at root)
+    # Skip system directories: .dwh, _history, _triage
+    system_dirs = {".dwh", "_history", "_triage"}
     document_files = {}
-    if documents_dir.exists():
-        for file in documents_dir.rglob("*"):
-            if file.is_file():
-                file_hash = drop_module.compute_hash(file)
-                rel_path = file.relative_to(documents_dir)
-                document_files[str(rel_path)] = (file_hash, file)
 
-    # Match files: find entries that moved from triage/ to documents/
+    for item in warehouse_root.iterdir():
+        # Skip system directories
+        if item.name in system_dirs:
+            continue
+
+        # Scan user categories
+        if item.is_dir():
+            for file in item.rglob("*"):
+                if file.is_file():
+                    file_hash = drop_module.compute_hash(file)
+                    rel_path = file.relative_to(warehouse_root)
+                    document_files[str(rel_path)] = (file_hash, file)
+
+    # Match files: find entries that moved from triage/ to warehouse root
     matches = []
     ambiguous = []
 

@@ -39,7 +39,7 @@ class TestImportSingleFile:
         result = run_cli(runner, ["drop", "import", "-m", "Test", str(single_file)])
         assert result.exit_code == 0
 
-        history_dir = tmp_warehouse / ".dwh" / "history"
+        history_dir = tmp_warehouse / "_history"
         history_items = list(history_dir.iterdir())
 
         assert len(history_items) == 1
@@ -51,7 +51,7 @@ class TestImportSingleFile:
         result = run_cli(runner, ["drop", "import", "-m", "Important doc", str(single_file)])
         drop_id = extract_drop_id(result.output)
 
-        history_dir = tmp_warehouse / ".dwh" / "history"
+        history_dir = tmp_warehouse / "_history"
         drop_dir = list(history_dir.iterdir())[0]
         receipt_path = drop_dir / "receipt.json"
 
@@ -71,7 +71,7 @@ class TestImportSingleFile:
         result = run_cli(runner, ["drop", "import", "-m", "Test", str(single_file)])
         assert result.exit_code == 0
 
-        history_dir = tmp_warehouse / ".dwh" / "history"
+        history_dir = tmp_warehouse / "_history"
         drop_dir = list(history_dir.iterdir())[0]
         tree_dir = drop_dir / "tree"
 
@@ -103,7 +103,7 @@ class TestImportDirectory:
         result = run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
         assert result.exit_code == 0
 
-        history_dir = tmp_warehouse / ".dwh" / "history"
+        history_dir = tmp_warehouse / "_history"
         drop_dir = list(history_dir.iterdir())[0]
         tree_dir = drop_dir / "tree"
 
@@ -118,7 +118,7 @@ class TestImportDirectory:
         result = run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
         assert result.exit_code == 0
 
-        history_dir = tmp_warehouse / ".dwh" / "history"
+        history_dir = tmp_warehouse / "_history"
         drop_dir = list(history_dir.iterdir())[0]
         tree_dir = drop_dir / "tree"
 
@@ -163,7 +163,7 @@ class TestImportMultiplePaths:
         assert "Imported 2 files" in result.output
 
         # Verify both appear in tree
-        history_dir = tmp_warehouse / ".dwh" / "history"
+        history_dir = tmp_warehouse / "_history"
         drop_dir = list(history_dir.iterdir())[0]
         tree_dir = drop_dir / "tree"
 
@@ -420,7 +420,7 @@ class TestProvenanceAndReceipts:
         drop_id = extract_drop_id(result.output)
 
         # Find and read receipt
-        history_dir = tmp_warehouse / ".dwh" / "history"
+        history_dir = tmp_warehouse / "_history"
         drop_dir = list(history_dir.iterdir())[0]
         receipt = json.loads((drop_dir / "receipt.json").read_text())
 
@@ -436,7 +436,7 @@ class TestProvenanceAndReceipts:
         message = "Very important tax documents from 2024"
         result = run_cli(runner, ["drop", "import", "-m", message, str(single_file)])
 
-        history_dir = tmp_warehouse / ".dwh" / "history"
+        history_dir = tmp_warehouse / "_history"
         drop_dir = list(history_dir.iterdir())[0]
         receipt = json.loads((drop_dir / "receipt.json").read_text())
 
@@ -458,7 +458,7 @@ class TestProvenanceAndReceipts:
         run_cli(runner, ["drop", "import", "-m", "Second", str(single_file)])
         run_cli(runner, ["drop", "import", "-m", "Third", str(single_file)])
 
-        history_dir = tmp_warehouse / ".dwh" / "history"
+        history_dir = tmp_warehouse / "_history"
         history_items = sorted(history_dir.iterdir())
 
         assert len(history_items) == 3

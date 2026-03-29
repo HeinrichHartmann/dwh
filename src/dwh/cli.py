@@ -27,19 +27,23 @@ def init(path: Path, name: str | None):
         sys.exit(1)
 
     try:
-        # Create directory structure
+        # Create directory structure (ADR-003)
         wh.dwh_dir.mkdir(parents=True, exist_ok=True)
         wh.history_dir.mkdir(parents=True, exist_ok=True)
         wh.triage_dir.mkdir(parents=True, exist_ok=True)
-        wh.documents_dir.mkdir(parents=True, exist_ok=True)
 
         # Initialize database
         db.init_db(wh.db_path)
 
-        # Write basic config (placeholder for now)
+        # Write basic config
         wh.config_path.write_text(f'name = "{name or path.name}"\nversion = "1"\n')
 
         click.echo(f"Initialized warehouse at {path}")
+        click.echo()
+        click.echo("Created:")
+        click.echo("  .dwh/       - Metadata (config, database cache)")
+        click.echo("  _history/   - Event log (source of truth, backup required)")
+        click.echo("  _triage/    - Working directory (ephemeral)")
 
     except Exception as e:
         click.echo(f"Error initializing warehouse: {e}", err=True)
@@ -251,7 +255,6 @@ def triage_sync_cmd():
         result = triage.triage_sync(
             wh.root,
             wh.triage_dir,
-            wh.documents_dir,
             wh.history_dir,
             conn
         )

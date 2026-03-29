@@ -40,7 +40,7 @@ class TestTriageCheckout:
         drop_id = extract_drop_id(result.output)
 
         # Triage with specific drop_id
-        result = run_cli(runner, ["triage", "checkout", drop_id])
+        result = run_cli(runner, ["_triage", "checkout", drop_id])
 
         assert result.exit_code == 0
         assert drop_id in result.output
@@ -50,7 +50,7 @@ class TestTriageCheckout:
         run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
         run_cli(runner, ["triage", "checkout"])
 
-        triage_dir = tmp_warehouse / "triage"
+        triage_dir = tmp_warehouse / "_triage"
         assert triage_dir.exists()
         assert (triage_dir / "file1.txt").exists()
         assert (triage_dir / "file2.txt").exists()
@@ -63,7 +63,7 @@ class TestTriageCheckout:
         run_cli(runner, ["triage", "checkout"])
 
         # Add a marker file
-        marker = tmp_warehouse / "triage" / "marker.txt"
+        marker = tmp_warehouse / "_triage" / "marker.txt"
         marker.write_text("marker")
 
         # Import another drop and triage again
@@ -91,11 +91,10 @@ class TestTriageSync:
         run_cli(runner, ["triage", "checkout"])
 
         # Move files to documents/
-        documents_dir = tmp_warehouse / "documents"
-        finance_dir = documents_dir / "finance"
+        finance_dir = tmp_warehouse / "finance"
         finance_dir.mkdir(parents=True)
 
-        triage_dir = tmp_warehouse / "triage"
+        triage_dir = tmp_warehouse / "_triage"
         (triage_dir / "file1.txt").rename(finance_dir / "file1.txt")
 
         # Sync
@@ -111,18 +110,17 @@ class TestTriageSync:
         run_cli(runner, ["triage", "checkout"])
 
         # Move file
-        documents_dir = tmp_warehouse / "documents"
-        finance_dir = documents_dir / "finance"
+        finance_dir = tmp_warehouse / "finance"
         finance_dir.mkdir(parents=True)
 
-        triage_dir = tmp_warehouse / "triage"
+        triage_dir = tmp_warehouse / "_triage"
         (triage_dir / single_file.name).rename(finance_dir / single_file.name)
 
         # Sync
         run_cli(runner, ["triage", "sync"])
 
         # Check classification record exists
-        history_dir = tmp_warehouse / ".dwh" / "history"
+        history_dir = tmp_warehouse / "_history"
         classify_files = list(history_dir.glob("*_classify.json"))
 
         assert len(classify_files) == 1
@@ -146,11 +144,9 @@ class TestTriageSync:
         run_cli(runner, ["triage", "checkout"])
 
         # Move file
-        documents_dir = tmp_warehouse / "documents"
-        documents_dir.mkdir(parents=True, exist_ok=True)
 
-        triage_dir = tmp_warehouse / "triage"
-        (triage_dir / single_file.name).rename(documents_dir / single_file.name)
+        triage_dir = tmp_warehouse / "_triage"
+        (triage_dir / single_file.name).rename(tmp_warehouse / single_file.name)
 
         # Sync
         run_cli(runner, ["triage", "sync"])
@@ -176,11 +172,9 @@ class TestTriageSync:
         run_cli(runner, ["triage", "checkout"])
 
         # Move file
-        documents_dir = tmp_warehouse / "documents"
-        documents_dir.mkdir(parents=True, exist_ok=True)
 
-        triage_dir = tmp_warehouse / "triage"
-        (triage_dir / single_file.name).rename(documents_dir / single_file.name)
+        triage_dir = tmp_warehouse / "_triage"
+        (triage_dir / single_file.name).rename(tmp_warehouse / single_file.name)
 
         # Sync
         run_cli(runner, ["triage", "sync"])
@@ -202,11 +196,10 @@ class TestTriageSync:
         run_cli(runner, ["triage", "checkout"])
 
         # Move files to nested categories
-        documents_dir = tmp_warehouse / "documents"
-        finance_dir = documents_dir / "finance" / "taxes" / "2024"
+        finance_dir = tmp_warehouse / "finance" / "taxes" / "2024"
         finance_dir.mkdir(parents=True)
 
-        triage_dir = tmp_warehouse / "triage"
+        triage_dir = tmp_warehouse / "_triage"
         (triage_dir / "file1.txt").rename(finance_dir / "invoice.txt")
 
         # Sync
@@ -215,7 +208,7 @@ class TestTriageSync:
         assert result.exit_code == 0
 
         # Check classification
-        history_dir = tmp_warehouse / ".dwh" / "history"
+        history_dir = tmp_warehouse / "_history"
         classify_file = list(history_dir.glob("*_classify.json"))[0]
         classify_record = json.loads(classify_file.read_text())
 
@@ -230,11 +223,9 @@ class TestTriageSync:
         run_cli(runner, ["triage", "checkout"])
 
         # Move only some files
-        documents_dir = tmp_warehouse / "documents"
-        documents_dir.mkdir(parents=True, exist_ok=True)
 
-        triage_dir = tmp_warehouse / "triage"
-        (triage_dir / "file1.txt").rename(documents_dir / "file1.txt")
+        triage_dir = tmp_warehouse / "_triage"
+        (triage_dir / "file1.txt").rename(tmp_warehouse / "file1.txt")
         # Leave file2.txt and others in triage/
 
         # Sync
@@ -256,19 +247,16 @@ class TestTriageWorkflow:
         drop_id = extract_drop_id(result.output)
 
         # 2. Triage
-        result = run_cli(runner, ["triage", "checkout", drop_id])
+        result = run_cli(runner, ["_triage", "checkout", drop_id])
         assert result.exit_code == 0
 
-        triage_dir = tmp_warehouse / "triage"
+        triage_dir = tmp_warehouse / "_triage"
         assert triage_dir.exists()
 
         # 3. User organizes files
-        documents_dir = tmp_warehouse / "documents"
-        (documents_dir / "work").mkdir(parents=True)
-        (documents_dir / "personal").mkdir(parents=True)
 
-        (triage_dir / "file1.txt").rename(documents_dir / "work" / "report.txt")
-        (triage_dir / "file2.txt").rename(documents_dir / "personal" / "notes.txt")
+        (triage_dir / "file1.txt").rename(tmp_warehouse / "work" / "report.txt")
+        (triage_dir / "file2.txt").rename(tmp_warehouse / "personal" / "notes.txt")
 
         # 4. Sync
         result = run_cli(runner, ["triage", "sync"])
@@ -279,7 +267,7 @@ class TestTriageWorkflow:
         assert not triage_dir.exists()
 
         # Check classification record
-        history_dir = tmp_warehouse / ".dwh" / "history"
+        history_dir = tmp_warehouse / "_history"
         classify_files = list(history_dir.glob("*_classify.json"))
         assert len(classify_files) == 1
 
@@ -308,11 +296,9 @@ class TestTriageWorkflow:
         run_cli(runner, ["drop", "import", "-m", "First", str(single_file)])
         run_cli(runner, ["triage", "checkout"])
 
-        documents_dir = tmp_warehouse / "documents"
-        documents_dir.mkdir(parents=True, exist_ok=True)
 
-        triage_dir = tmp_warehouse / "triage"
-        (triage_dir / single_file.name).rename(documents_dir / "first.txt")
+        triage_dir = tmp_warehouse / "_triage"
+        (triage_dir / single_file.name).rename(tmp_warehouse / "first.txt")
 
         run_cli(runner, ["triage", "sync"])
 
@@ -323,13 +309,13 @@ class TestTriageWorkflow:
         run_cli(runner, ["drop", "import", "-m", "Second", str(second_file)])
         run_cli(runner, ["triage", "checkout"])
 
-        triage_dir = tmp_warehouse / "triage"
-        (triage_dir / "second.txt").rename(documents_dir / "second.txt")
+        triage_dir = tmp_warehouse / "_triage"
+        (triage_dir / "second.txt").rename(tmp_warehouse / "second.txt")
 
         run_cli(runner, ["triage", "sync"])
 
         # Verify two classification records
-        history_dir = tmp_warehouse / ".dwh" / "history"
+        history_dir = tmp_warehouse / "_history"
         classify_files = sorted(history_dir.glob("*_classify.json"))
         assert len(classify_files) == 2
 
