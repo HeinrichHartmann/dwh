@@ -253,3 +253,175 @@ def get_triage_state(conn: sqlite3.Connection) -> str | None:
     """Get the drop_id currently being triaged, or None."""
     row = conn.execute("SELECT drop_id FROM triage_state WHERE id = 1").fetchone()
     return row["drop_id"] if row else None
+
+
+def get_blob_classification(blob_hash: str, conn: sqlite3.Connection) -> str | None:
+    """Get most recent classification category for a blob.
+
+    Returns the category from the most recent document record with this blob hash,
+    or None if blob has never been classified.
+
+    Uses "last classification wins" strategy (ADR-005).
+    """
+    row = conn.execute(
+        """SELECT d.category
+           FROM documents d
+           JOIN entries e ON d.entry_id = e.id
+           WHERE e.blob_hash = ?
+           ORDER BY d.created_at DESC
+           LIMIT 1""",
+        (blob_hash,),
+    ).fetchone()
+
+    return row["category"] if row else None
+
+
+def triage_suggest(
+    triage_dir: Path, staging_dir: Path, conn: sqlite3.Connection
+) -> dict:
+    """Auto-classify known blobs from triage to staging.
+
+    Moves files with known classifications from _triage/ to _staging/,
+    leaving unknown files in _triage/ for manual classification.
+
+    Returns: {
+        "auto_classified": [(filename, category), ...],
+        "needs_manual": [filename, ...]
+    }
+    """
+    # Check triage state
+    state_row = conn.execute("SELECT drop_id FROM triage_state WHERE id = 1").fetchone()
+    if not state_row:
+        raise NoTriageInProgressError()
+
+    # Clear staging directory
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir)
+    staging_dir.mkdir(parents=True)
+
+    auto_classified = []
+    needs_manual = []
+
+    # Scan triage directory
+    if not triage_dir.exists():
+        return {"auto_classified": auto_classified, "needs_manual": needs_manual}
+
+    for file in triage_dir.rglob("*"):
+        if not file.is_file():
+            continue
+
+        # Compute hash
+        file_hash = drop_module.compute_hash(file)
+
+        # Check for previous classification
+        category = get_blob_classification(file_hash, conn)
+
+        if category is not None:
+            # Known blob - move to staging
+            target = staging_dir / category / file.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(file), str(target))
+            auto_classified.append((file.name, category))
+        else:
+            # Unknown blob - leave in triage
+            needs_manual.append(file.name)
+
+    return {"auto_classified": auto_classified, "needs_manual": needs_manual}
+
+
+def triage_merge(
+    staging_dir: Path, warehouse_root: Path, history_dir: Path, conn: sqlite3.Connection
+) -> dict:
+    """Merge staged files to warehouse and create classifications.
+
+    Moves files from _staging/ to warehouse root and creates classification records.
+
+    Returns: {
+        "merged": [(filename, category), ...]
+    }
+    """
+    # Check triage state
+    state_row = conn.execute("SELECT drop_id FROM triage_state WHERE id = 1").fetchone()
+    if not state_row:
+        raise NoTriageInProgressError()
+
+    drop_id = state_row["drop_id"]
+
+    # Collect all files in staging
+    merged = []
+    classifications = []
+
+    if not staging_dir.exists():
+        return {"merged": merged}
+
+    for file in staging_dir.rglob("*"):
+        if not file.is_file():
+            continue
+
+        # Compute category from path relative to staging
+        rel_path = file.relative_to(staging_dir)
+        category = str(rel_path.parent)
+
+        # Move to warehouse
+        target = warehouse_root / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(file), str(target))
+
+        # Find entry_id for this file
+        file_hash = drop_module.compute_hash(target)
+        entry = conn.execute(
+            "SELECT id FROM entries WHERE drop_id = ? AND blob_hash = ?",
+            (drop_id, file_hash),
+        ).fetchone()
+
+        if not entry:
+            continue  # Shouldn't happen, but skip if no match
+
+        # Check if entry already has a document (skip if already classified)
+        existing_doc = conn.execute(
+            "SELECT id FROM documents WHERE entry_id = ?", (entry["id"],)
+        ).fetchone()
+        if existing_doc:
+            continue  # Entry already classified, skip
+
+        # Insert document record (creates classification)
+        cursor = conn.execute(
+            """INSERT INTO documents (entry_id, name, category)
+               VALUES (?, ?, ?)""",
+            (entry["id"], file.name, category),
+        )
+
+        classifications.append(
+            {
+                "entry_id": entry["id"],
+                "document_id": cursor.lastrowid,
+                "category": category,
+                "name": file.name,
+            }
+        )
+
+        merged.append((file.name, category))
+
+    # Write classification event to history
+    if classifications:
+        seq_num = history_module.get_next_history_number(history_dir)
+        classify_file = history_dir / f"{seq_num:03d}_classify.json"
+
+        classification_record = {
+            "type": "classify",
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "actor": getpass.getuser(),
+            "message": "Triage merge (auto-classified)",
+            "classifications": classifications,
+        }
+
+        with open(classify_file, "w") as f:
+            json.dump(classification_record, f, indent=2)
+
+        conn.commit()
+
+    # Clear staging directory
+    if staging_dir.exists():
+        shutil.rmtree(staging_dir)
+
+    return {"merged": merged}

@@ -338,6 +338,102 @@ def triage_sync_cmd():
         sys.exit(1)
 
 
+@triage_group.command("suggest")
+def triage_suggest_cmd():
+    """Auto-classify known files from triage to staging."""
+    try:
+        wh = warehouse.resolve_warehouse()
+        conn = wh.connect()
+
+        result = triage.triage_suggest(wh.triage_dir, wh.staging_dir, conn)
+
+        auto_classified = result["auto_classified"]
+        needs_manual = result["needs_manual"]
+
+        if auto_classified:
+            click.echo(
+                f"✓ {len(auto_classified)} files auto-classified (known content)"
+            )
+
+            # Group by category for display
+            by_category = {}
+            for filename, category in auto_classified:
+                if category not in by_category:
+                    by_category[category] = []
+                by_category[category].append(filename)
+
+            for category, files in sorted(by_category.items()):
+                click.echo(f"  → {len(files)} to {category}/")
+
+            click.echo()
+            click.echo(f"→ {len(auto_classified)} files staged in _staging/ for review")
+
+        if needs_manual:
+            click.echo(
+                f"→ {len(needs_manual)} files remain in _triage/ (need manual classification)"
+            )
+
+        if auto_classified:
+            click.echo()
+            click.echo("Review staged files and adjust before running:")
+            click.echo("  dwh triage merge")
+
+        conn.close()
+
+    except triage.NoTriageInProgressError:
+        click.echo("Error: No triage in progress.", err=True)
+        sys.exit(1)
+    except warehouse.WarehouseNotFoundError:
+        click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@triage_group.command("merge")
+def triage_merge_cmd():
+    """Merge staged files to warehouse."""
+    try:
+        wh = warehouse.resolve_warehouse()
+        conn = wh.connect()
+
+        result = triage.triage_merge(wh.staging_dir, wh.root, wh.history_dir, conn)
+
+        merged = result["merged"]
+
+        if merged:
+            click.echo(f"✓ Merged {len(merged)} files")
+
+            # Group by category for display
+            by_category = {}
+            for filename, category in merged:
+                if category not in by_category:
+                    by_category[category] = []
+                by_category[category].append(filename)
+
+            for category, files in sorted(by_category.items()):
+                click.echo(f"  {category}/: {len(files)} files")
+
+            click.echo()
+            click.echo("Classification records written to history.")
+            click.echo("_staging/ cleared.")
+        else:
+            click.echo("No files in staging to merge.")
+
+        conn.close()
+
+    except triage.NoTriageInProgressError:
+        click.echo("Error: No triage in progress.", err=True)
+        sys.exit(1)
+    except warehouse.WarehouseNotFoundError:
+        click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
 @main.group()
 def warehouse_group():
     """Manage warehouses."""

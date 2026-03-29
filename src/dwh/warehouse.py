@@ -54,6 +54,7 @@ class Warehouse:
         # ADR-003: System directories at root with underscore prefix
         self.history_dir = self.root / "_history"
         self.triage_dir = self.root / "_triage"
+        self.staging_dir = self.root / "_staging"
 
     def exists(self) -> bool:
         """Check if warehouse is initialized."""

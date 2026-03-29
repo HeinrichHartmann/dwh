@@ -423,3 +423,180 @@ class TestTriageSkippedFiles:
         state = conn.execute("SELECT * FROM triage_state").fetchone()
         assert state is None
         conn.close()
+
+
+class TestTriageSuggestMerge:
+    """Test auto-triage suggest/merge workflow (ADR-005)."""
+
+    def test_suggest_with_no_known_files(self, runner, tmp_warehouse, single_file):
+        """Suggest with no known files leaves all in triage."""
+        # Import and triage (first time - no classifications exist)
+        run_cli(runner, ["drop", "import", "-m", "First", str(single_file)])
+        run_cli(runner, ["triage", "checkout"])
+
+        # Run suggest
+        result = run_cli(runner, ["triage", "suggest"])
+
+        assert result.exit_code == 0
+        assert "1 files remain in _triage/" in result.output
+
+        # File should still be in triage
+        triage_dir = tmp_warehouse / "_triage"
+        assert (triage_dir / single_file.name).exists()
+
+        # Staging should be empty
+        staging_dir = tmp_warehouse / "_staging"
+        assert staging_dir.exists()
+        staging_files = list(staging_dir.rglob("*"))
+        assert len([f for f in staging_files if f.is_file()]) == 0
+
+    def test_suggest_with_known_files(self, runner, tmp_warehouse, single_file):
+        """Suggest moves known files to staging."""
+        # First: classify a file manually
+        run_cli(runner, ["drop", "import", "-m", "First", str(single_file)])
+        run_cli(runner, ["triage", "checkout"])
+
+        # Manually classify
+        docs_dir = tmp_warehouse / "docs"
+        docs_dir.mkdir(parents=True)
+        triage_dir = tmp_warehouse / "_triage"
+        (triage_dir / single_file.name).rename(docs_dir / single_file.name)
+        run_cli(runner, ["triage", "sync"])
+
+        # Second: import same file again
+        run_cli(
+            runner, ["drop", "import", "-m", "Second", str(single_file)], input="y\n"
+        )
+        run_cli(runner, ["triage", "checkout"])
+
+        # Run suggest - should auto-classify
+        result = run_cli(runner, ["triage", "suggest"])
+
+        assert result.exit_code == 0
+        assert "1 files auto-classified" in result.output
+        assert "docs/" in result.output
+        assert "1 files staged in _staging/" in result.output
+
+        # File should be in staging
+        staging_dir = tmp_warehouse / "_staging"
+        assert (staging_dir / "docs" / single_file.name).exists()
+
+        # File should not be in triage
+        triage_dir = tmp_warehouse / "_triage"
+        assert not (triage_dir / single_file.name).exists()
+
+    def test_merge_creates_classifications(self, runner, tmp_warehouse, single_file):
+        """Merge moves files from staging to warehouse and creates classifications."""
+        # Setup: First classify manually
+        run_cli(runner, ["drop", "import", "-m", "First", str(single_file)])
+        run_cli(runner, ["triage", "checkout"])
+        docs_dir = tmp_warehouse / "docs"
+        docs_dir.mkdir(parents=True)
+        triage_dir = tmp_warehouse / "_triage"
+        (triage_dir / single_file.name).rename(docs_dir / single_file.name)
+        run_cli(runner, ["triage", "sync"])
+
+        # Import again and suggest
+        run_cli(
+            runner, ["drop", "import", "-m", "Second", str(single_file)], input="y\n"
+        )
+        run_cli(runner, ["triage", "checkout"])
+        run_cli(runner, ["triage", "suggest"])
+
+        # Now merge
+        result = run_cli(runner, ["triage", "merge"])
+
+        assert result.exit_code == 0
+        assert "Merged 1 files" in result.output
+        assert "docs/: 1 files" in result.output
+        assert "Classification records written" in result.output
+
+        # File should be in warehouse
+        assert (docs_dir / single_file.name).exists()
+
+        # Staging should be cleared
+        staging_dir = tmp_warehouse / "_staging"
+        assert not staging_dir.exists()
+
+        # Check database has classification
+        import sqlite3
+
+        db_path = tmp_warehouse / ".dwh" / "dwh.db"
+        conn = sqlite3.connect(db_path)
+        documents = conn.execute("SELECT * FROM documents").fetchall()
+        # Should have 2: original manual classification + merged one
+        assert len(documents) == 2
+        conn.close()
+
+    def test_suggest_merge_complete_workflow(self, runner, tmp_warehouse, sample_files):
+        """Complete suggest/merge workflow with mixed known/unknown files."""
+        import shutil
+
+        # First: classify some files
+        run_cli(runner, ["drop", "import", "-m", "First", str(sample_files)])
+        run_cli(runner, ["triage", "checkout"])
+
+        # Classify 2 files manually
+        finance_dir = tmp_warehouse / "finance"
+        finance_dir.mkdir(parents=True)
+        triage_dir = tmp_warehouse / "_triage"
+
+        (triage_dir / "file1.txt").rename(finance_dir / "file1.txt")
+        (triage_dir / "file2.txt").rename(finance_dir / "file2.txt")
+        run_cli(runner, ["triage", "sync"])
+
+        # Second: import all files again (including newly classified ones)
+        # Copy sample_files to a new location to avoid duplicate warning
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            copied_samples = shutil.copytree(sample_files, tmpdir + "/samples")
+            result = run_cli(
+                runner,
+                ["drop", "import", "-m", "Second", str(copied_samples)],
+                input="y\n",  # Confirm duplicate import
+            )
+
+        run_cli(runner, ["triage", "checkout"])
+
+        # Suggest - should auto-classify 2 known files
+        result = run_cli(runner, ["triage", "suggest"])
+
+        assert result.exit_code == 0
+        assert "2 files auto-classified" in result.output
+        assert "2 files remain in _triage/" in result.output
+
+        # Merge staged files
+        result = run_cli(runner, ["triage", "merge"])
+
+        assert result.exit_code == 0
+        assert "Merged 2 files" in result.output
+
+        # Check files are in warehouse
+        assert (finance_dir / "file1.txt").exists()
+        assert (finance_dir / "file2.txt").exists()
+
+        # Triage still has 2 unknown files
+        triage_dir = tmp_warehouse / "_triage"
+        assert triage_dir.exists()
+        remaining = list(triage_dir.rglob("*.txt"))
+        assert len(remaining) == 2
+
+    def test_suggest_without_triage_fails(self, runner, tmp_warehouse):
+        """Suggest without active triage should fail."""
+        result = run_cli(runner, ["triage", "suggest"])
+
+        assert result.exit_code != 0
+        assert "no triage in progress" in result.output.lower()
+
+    def test_merge_without_staging_succeeds(self, runner, tmp_warehouse, single_file):
+        """Merge with empty staging should succeed with no-op."""
+        # Setup triage but don't suggest
+        run_cli(runner, ["drop", "import", "-m", "Test", str(single_file)])
+        run_cli(runner, ["triage", "checkout"])
+
+        # Merge with no staging
+        result = run_cli(runner, ["triage", "merge"])
+
+        assert result.exit_code == 0
+        assert "No files in staging" in result.output
