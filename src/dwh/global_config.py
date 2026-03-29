@@ -98,13 +98,22 @@ class GlobalConfig:
 
 def get_config_path() -> Path:
     """
-    Get global config path using XDG standard.
+    Get global config path.
 
-    Returns ~/.config/dwh/config.toml or $XDG_CONFIG_HOME/dwh/config.toml
+    Priority:
+    1. $DWH_CONFIG_DIR/config.toml (explicit override, useful for testing)
+    2. $XDG_CONFIG_HOME/dwh/config.toml (XDG standard)
+    3. ~/.config/dwh/config.toml (default)
     """
-    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
+    # 1. Explicit DWH config directory
+    dwh_config_dir = os.environ.get("DWH_CONFIG_DIR")
+    if dwh_config_dir:
+        return Path(dwh_config_dir) / "config.toml"
 
+    # 2. XDG standard
+    xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
     if xdg_config_home:
         return Path(xdg_config_home) / "dwh" / "config.toml"
-    else:
-        return Path.home() / ".config" / "dwh" / "config.toml"
+
+    # 3. Default
+    return Path.home() / ".config" / "dwh" / "config.toml"
