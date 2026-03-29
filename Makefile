@@ -1,12 +1,4 @@
-.PHONY: install test test-v test-cov clean help
-
-help:
-	@echo "DWH Development Commands:"
-	@echo "  make install   - Install as a tool"
-	@echo "  make test      - Run all tests"
-	@echo "  make test-v    - Run tests with verbose output"
-	@echo "  make test-cov  - Run tests with coverage report"
-	@echo "  make clean     - Clean up temporary files"
+.PHONY: install test test-v test-cov lint clean
 
 install:
 	uv tool install --force --reinstall .
@@ -19,6 +11,10 @@ test-v:
 
 test-cov:
 	uv run pytest tests/ --cov=dwh --cov-report=term-missing
+
+lint:
+	uv run ruff check src/ tests/
+	uv run ruff format --check src/ tests/
 
 clean:
 	rm -rf dist/

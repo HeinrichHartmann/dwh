@@ -26,7 +26,7 @@ class TestTriageCheckout:
         drop_id = extract_drop_id(result.output)
 
         # Triage checkout
-        result = run_cli(runner, ["triage"])
+        result = run_cli(runner, ["triage", "checkout"])
 
         assert result.exit_code == 0
         assert "Checked out drop" in result.output
@@ -40,7 +40,7 @@ class TestTriageCheckout:
         drop_id = extract_drop_id(result.output)
 
         # Triage with specific drop_id
-        result = run_cli(runner, ["triage", drop_id])
+        result = run_cli(runner, ["triage", "checkout", drop_id])
 
         assert result.exit_code == 0
         assert drop_id in result.output
@@ -48,7 +48,7 @@ class TestTriageCheckout:
     def test_triage_creates_triage_directory(self, runner, tmp_warehouse, sample_files):
         """Triage creates triage/ with files."""
         run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
-        run_cli(runner, ["triage"])
+        run_cli(runner, ["triage", "checkout"])
 
         triage_dir = tmp_warehouse / "triage"
         assert triage_dir.exists()
@@ -60,7 +60,7 @@ class TestTriageCheckout:
         """Triage clears existing triage/ directory."""
         # First triage
         run_cli(runner, ["drop", "import", "-m", "First", str(single_file)])
-        run_cli(runner, ["triage"])
+        run_cli(runner, ["triage", "checkout"])
 
         # Add a marker file
         marker = tmp_warehouse / "triage" / "marker.txt"
@@ -68,14 +68,14 @@ class TestTriageCheckout:
 
         # Import another drop and triage again
         run_cli(runner, ["drop", "import", "-m", "Second", str(single_file)])
-        run_cli(runner, ["triage"])
+        run_cli(runner, ["triage", "checkout"])
 
         # Marker should be gone
         assert not marker.exists()
 
     def test_triage_without_drops_fails(self, runner, tmp_warehouse):
         """Triage without any drops should fail."""
-        result = run_cli(runner, ["triage"])
+        result = run_cli(runner, ["triage", "checkout"])
 
         assert result.exit_code != 0
         assert "no drops" in result.output.lower() or "error" in result.output.lower()
@@ -88,7 +88,7 @@ class TestTriageSync:
         """Sync creates classifications for moved files."""
         # Import and triage
         run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
-        run_cli(runner, ["triage"])
+        run_cli(runner, ["triage", "checkout"])
 
         # Move files to documents/
         documents_dir = tmp_warehouse / "documents"
@@ -108,7 +108,7 @@ class TestTriageSync:
         """Sync writes classification record to history."""
         # Import and triage
         run_cli(runner, ["drop", "import", "-m", "Test", str(single_file)])
-        run_cli(runner, ["triage"])
+        run_cli(runner, ["triage", "checkout"])
 
         # Move file
         documents_dir = tmp_warehouse / "documents"
@@ -143,11 +143,11 @@ class TestTriageSync:
 
         # Import and triage
         run_cli(runner, ["drop", "import", "-m", "Test", str(single_file)])
-        run_cli(runner, ["triage"])
+        run_cli(runner, ["triage", "checkout"])
 
         # Move file
         documents_dir = tmp_warehouse / "documents"
-        documents_dir.mkdir(parents=True)
+        documents_dir.mkdir(parents=True, exist_ok=True)
 
         triage_dir = tmp_warehouse / "triage"
         (triage_dir / single_file.name).rename(documents_dir / single_file.name)
@@ -173,11 +173,11 @@ class TestTriageSync:
         """Sync clears triage/ directory after completion."""
         # Import and triage
         run_cli(runner, ["drop", "import", "-m", "Test", str(single_file)])
-        run_cli(runner, ["triage"])
+        run_cli(runner, ["triage", "checkout"])
 
         # Move file
         documents_dir = tmp_warehouse / "documents"
-        documents_dir.mkdir(parents=True)
+        documents_dir.mkdir(parents=True, exist_ok=True)
 
         triage_dir = tmp_warehouse / "triage"
         (triage_dir / single_file.name).rename(documents_dir / single_file.name)
@@ -199,7 +199,7 @@ class TestTriageSync:
         """Sync handles nested category directories."""
         # Import and triage
         run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
-        run_cli(runner, ["triage"])
+        run_cli(runner, ["triage", "checkout"])
 
         # Move files to nested categories
         documents_dir = tmp_warehouse / "documents"
@@ -227,11 +227,11 @@ class TestTriageSync:
         """Sync reports files left in triage/ as skipped."""
         # Import and triage
         run_cli(runner, ["drop", "import", "-m", "Test", str(sample_files)])
-        run_cli(runner, ["triage"])
+        run_cli(runner, ["triage", "checkout"])
 
         # Move only some files
         documents_dir = tmp_warehouse / "documents"
-        documents_dir.mkdir(parents=True)
+        documents_dir.mkdir(parents=True, exist_ok=True)
 
         triage_dir = tmp_warehouse / "triage"
         (triage_dir / "file1.txt").rename(documents_dir / "file1.txt")
@@ -256,7 +256,7 @@ class TestTriageWorkflow:
         drop_id = extract_drop_id(result.output)
 
         # 2. Triage
-        result = run_cli(runner, ["triage", drop_id])
+        result = run_cli(runner, ["triage", "checkout", drop_id])
         assert result.exit_code == 0
 
         triage_dir = tmp_warehouse / "triage"
@@ -295,11 +295,10 @@ class TestTriageWorkflow:
         documents = conn.execute("SELECT * FROM documents ORDER BY id").fetchall()
         assert len(documents) == 2
 
-        assert documents[0]["name"] == "report.txt"
-        assert documents[0]["category"] == "work"
-
-        assert documents[1]["name"] == "notes.txt"
-        assert documents[1]["category"] == "personal"
+        # Check both documents exist (order-independent)
+        doc_map = {doc["name"]: doc["category"] for doc in documents}
+        assert doc_map["report.txt"] == "work"
+        assert doc_map["notes.txt"] == "personal"
 
         conn.close()
 
@@ -307,10 +306,10 @@ class TestTriageWorkflow:
         """Multiple import-triage-sync cycles work independently."""
         # First cycle
         run_cli(runner, ["drop", "import", "-m", "First", str(single_file)])
-        run_cli(runner, ["triage"])
+        run_cli(runner, ["triage", "checkout"])
 
         documents_dir = tmp_warehouse / "documents"
-        documents_dir.mkdir(parents=True)
+        documents_dir.mkdir(parents=True, exist_ok=True)
 
         triage_dir = tmp_warehouse / "triage"
         (triage_dir / single_file.name).rename(documents_dir / "first.txt")
@@ -322,7 +321,7 @@ class TestTriageWorkflow:
         second_file.write_text("second content")
 
         run_cli(runner, ["drop", "import", "-m", "Second", str(second_file)])
-        run_cli(runner, ["triage"])
+        run_cli(runner, ["triage", "checkout"])
 
         triage_dir = tmp_warehouse / "triage"
         (triage_dir / "second.txt").rename(documents_dir / "second.txt")
