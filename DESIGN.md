@@ -57,7 +57,7 @@ Stored in history as: `.dwh/history/NNN_drop_{drop_id}/receipt.json`
 One file occurrence within a drop.
 
 Contains:
-- **entry_id** - Generated opaque identifier (stable)
+- **entry_id** - Deterministic ID: `e_<hash16>` derived from `drop_id:relative_path`
 - **drop_id** - Parent drop (FK)
 - **blob_hash** - Content reference (FK)
 - **filename** - Original filename with extension
@@ -69,7 +69,7 @@ Contains:
 A classified entry with metadata.
 
 Contains:
-- **document_id** - Generated opaque identifier (stable)
+- **document_id** - Integer ID (database AUTOINCREMENT)
 - **entry_id** - Source entry (FK, immutable)
 - **name** - Display name (mutable)
 - **category** - Classification path (mutable)
@@ -80,7 +80,9 @@ Contains:
 
 A record of filing/classification. Represented as a JSON file in history.
 
-Stored in history as: `.dwh/history/NNN_classify_{id}.json`
+The history sequence number serves as the classification ID.
+
+Stored in history as: `.dwh/history/NNN_classify.json`
 
 ## History: Append-Only Log
 
@@ -137,18 +139,17 @@ NNN_drop_{drop_id}/
 
 ### Classification Record (file)
 
-`NNN_classify_{id}.json`:
+`NNN_classify.json`:
 ```json
 {
   "type": "classify",
-  "id": "c_01jv9z8d0f4n6r2s1t3u5v",
   "created_at": "2026-03-29T15:00:00Z",
   "actor": "hhartmann",
   "message": "Filing tax documents",
   "classifications": [
     {
-      "entry_id": "e_01jv9z4r6m8q2k1p3s5t7u",
-      "document_id": "doc_01jv9z8d0f4n6r2s1t3u5v",
+      "entry_id": "e_f4bea3104f381c7e",
+      "document_id": 1,
       "category": "finance/taxes",
       "name": "invoice.pdf"
     }
@@ -229,7 +230,7 @@ CREATE TABLE entries (
 );
 
 CREATE TABLE documents (
-    id TEXT PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     entry_id TEXT NOT NULL UNIQUE REFERENCES entries(id),
     name TEXT NOT NULL,
     category TEXT NOT NULL DEFAULT '',
