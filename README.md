@@ -4,150 +4,170 @@ A durable document warehouse for archiving files with strong provenance and read
 
 ## Product Goals
 
-**DWH is a storage tool, not a workflow tool.**
-
-It sits in the same category as filesystems (ext4, ZFS, APFS) and object stores (S3), not workflow engines or transformation pipelines.
-
-### Core Promises
-
 1. **Durability** - What you give us, we keep. Forever.
 2. **Provenance** - Every file has a receipt: who, when, why, from where.
-3. **Metadata-centric** - Metadata is canonical; filesystems are projections.
+3. **Metadata-centric** - History is the source of truth; everything else is derived.
 4. **Open Classification** - External tools (including LLMs) can refine organization.
 
-### What DWH Is
+## What DWH Is
 
 - A place to put documents you want to keep for 10+ years
 - An archive that tracks *why* things were archived, not just *what*
-- Metadata over content-addressed blobs, with filesystem projections
+- Append-only history with rebuildable database and projections
 - A system where classification can improve over time
 
-### What DWH Is Not
+## What DWH Is Not
 
 - A backup system (use restic, borgbackup, etc.)
 - A transformation pipeline (use Make, Snakemake, etc.)
 - A workflow orchestrator (use Airflow, Prefect, etc.)
 - A full-text search engine (use ripgrep, Elasticsearch, etc.)
 
-## Architecture
-
-DWH has three layers:
-
-1. **Blob layer** - Content-addressed immutable storage. Handles deduplication, replication, caching.
-2. **Metadata layer** - SQLite database with drops, entries, provenance, classification, placements.
-3. **Projection layer** - Filesystem views (`drops/`, `archive/`) derived from metadata. Rebuildable.
-
-The key principle: **metadata is canonical; filesystems are projections.**
-
-## v1 Interface
-
-### CLI Commands
+## Quick Start
 
 ```bash
 # Initialize a warehouse
 dwh init .
 
-# Import files with provenance
-dwh import -m "Bank statements Q1 2025" ~/Downloads/statements/
-dwh import -m "Tax receipts" invoice.pdf receipt.pdf folder/
+# Import some files
+dwh drop import -m "Tax documents 2024" ~/Downloads/tax/
 
-# Export a drop (reconstruct stored drop)
-dwh export d_2026-03-28_143211_8f3c ./restore/
+# Triage the drop (checkout for classification)
+dwh triage
 
-# List drops
-dwh list
+# Move files to documents/ to classify them
+mv triage/invoice.pdf documents/finance/taxes/
 
-# Show drop details
-dwh show d_2026-03-28_143211_8f3c
+# Finalize triage
+dwh triage sync
 
-# Reconcile archive edits into metadata
-dwh sync
+# Done. Documents are classified with full provenance.
 ```
 
-### Filesystem Layout
+## Usage
 
-After `dwh init .`:
+### Importing
+
+```bash
+# Import files with provenance
+dwh drop import -m "Bank statements Q1 2025" ~/Downloads/statements/
+dwh drop import -m "Tax receipts" invoice.pdf receipt.pdf folder/
+```
+
+What happens:
+1. Files are copied into `.dwh/blobs/` (content-addressed)
+2. A drop record is appended to `.dwh/history/`
+3. Each file becomes an entry within the drop
+
+### Listing and Inspecting
+
+```bash
+# List all drops
+dwh drop list
+
+# Show drop details
+dwh drop inspect d_2026-03-28_143211_8f3c
+```
+
+### Triage
+
+Triage is how you classify documents from a drop.
+
+```bash
+# Checkout the latest unprocessed drop
+dwh triage
+
+# Or checkout a specific drop
+dwh triage d_2026-03-28_143211_8f3c
+
+# Organize files by moving them to documents/
+mkdir -p documents/finance/taxes
+mv triage/invoice.pdf documents/finance/taxes/
+
+# Finalize triage
+dwh triage sync
+```
+
+What happens during `triage sync`:
+- Scans `triage/` for missing files
+- Scans `documents/` for new files
+- Matches by filename + content hash
+- Creates classification records in history
+- Clears `triage/`
+
+If sync can't match unambiguously:
+```bash
+dwh triage sync
+# ✓ Classified: invoice.pdf → finance/taxes/
+# ✗ Ambiguous: receipt.pdf - skipping
+
+# Resolve manually
+dwh file <entry_id> --category finance/taxes --name receipt.pdf
+dwh triage sync
+```
+
+### Rebuilding
+
+```bash
+# Rebuild database from history (if corrupted)
+dwh rebuild
+
+# Rebuild projections from database
+dwh restore
+```
+
+### Verifying
+
+```bash
+# Check integrity of all blobs
+dwh verify
+
+# Check a specific drop
+dwh verify d_2026-03-28_143211_8f3c
+```
+
+## Filesystem Layout
 
 ```
 warehouse/
-├── drops/              # Recent drops (receipts + files)
-│   └── 2026/
-│       └── 03/
-│           └── d_2026-03-28_143211_8f3c/
-│               ├── manifest.json
-│               └── files/
-├── archive/            # Editable categorization view
-│   ├── pile/           # Uncategorized documents
+├── triage/                     # Current drop being classified
+│   ├── invoice.pdf
+│   └── receipt.pdf
+├── documents/                  # Classified documents
 │   ├── finance/
-│   │   ├── amazon/
-│   │   └── comdirect/
+│   │   └── taxes/
+│   │       └── invoice.pdf
 │   └── ...
-└── .dwh/               # Internal state (do not touch)
-    ├── dwh.db          # SQLite metadata
-    ├── blobs/          # Content-addressed storage
-    ├── derived/        # Computed artifacts (text extraction, etc.)
-    └── cache/          # Transient caches
+└── .dwh/
+    ├── config.toml
+    ├── dwh.db                  # Cached state (rebuildable)
+    └── history/                # Append-only log (source of truth)
+        ├── 001_drop_d_.../
+        │   ├── receipt.json    # Drop metadata (like git commit)
+        │   └── tree/           # Actual files (canonical location)
+        │       └── invoice.pdf
+        ├── 002_classify_...json
+        └── ...
 ```
 
-### Import Flow
+## Concepts (Summary)
 
-```
-┌─────────────────┐      dwh import -m         ┌──────────────┐
-│  Your files     │  ───────────────────────▶  │  .dwh/blobs  │
-│  (anywhere)     │       "reason"             │  (canonical) │
-└─────────────────┘                            └──────────────┘
-                                                      │
-                              ┌────────────────────────┤
-                              ▼                       ▼
-                       ┌──────────────┐        ┌──────────────┐
-                       │   drops/     │        │  archive/    │
-                       │  (receipt)   │        │   pile/      │
-                       └──────────────┘        └──────────────┘
-```
+| Concept | Description |
+|---------|-------------|
+| **Blob** | Raw bytes, content-addressed, immutable |
+| **Drop** | Import event with receipt (who, when, why) |
+| **Entry** | One file within a drop (has provenance) |
+| **Document** | Classified entry with category and name |
+| **History** | Append-only log of drops and classifications |
 
-Files are copied (not moved) into the warehouse. The original stays where it was.
+**Key invariant:** Database can be rebuilt by replaying history.
 
-### Classification Flow
+For technical details, see [DESIGN.md](DESIGN.md).
 
-```
-┌──────────────────┐    mv / Finder / LLM    ┌──────────────────┐
-│   archive/pile   │  ─────────────────────▶ │  archive/finance │
-└──────────────────┘                         └──────────────────┘
-                                                      │
-                                 dwh sync             │
-                          ◀───────────────────────────┘
+## Technical Design
 
-                          Reconciles filesystem edits into metadata
-```
-
-Classification is expressed through filesystem placement. Move a file to `finance/amazon/` and `dwh sync` records that as classification intent.
-
-### Projections and Retention
-
-`drops/` and `archive/` are **node-local retained projections**, not canonical truth.
-
-- `drops/` - Recent drops (default: 30 days). Older drops remain exportable via `dwh export`.
-- `archive/` - Current filing view (default: 5 years). Configurable per category.
-
-Canonical state lives in metadata + blobs. Projections can be rebuilt.
-
-## Design Documents
-
-- [DWH Design](adr/DWH-DESIGN.md) - Comprehensive design document
-- [ADR-001](adr/001-drop-based-archival.md) - Drop-based archival with provenance
-- [ADR-002](adr/002-metadata-canonical.md) - Metadata is canonical
-
-## Installation
-
-```bash
-cd src/dwh
-make install   # Uses uv to install
-```
-
-## Status
-
-**v1 in development.** Core import and capture workflows are functional.
-
-## License
-
-Private repository. All rights reserved.
+See [DESIGN.md](DESIGN.md) for:
+- History format and replay
+- Database schema
+- Triage workflow details
+- Invariants and guarantees
