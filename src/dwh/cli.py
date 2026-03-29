@@ -366,6 +366,80 @@ def warehouse_select(name: str):
     click.echo(f"  Path: {wh_path}")
 
 
+@warehouse_group.command("add")
+@click.argument("path", type=click.Path(exists=True, path_type=Path))
+@click.option("--name", help="Registry name (defaults to directory name)")
+def warehouse_add(path: Path, name: str | None):
+    """Add an existing warehouse to the registry."""
+    from dwh.global_config import GlobalConfig
+
+    path = path.resolve()
+    wh = warehouse.Warehouse(path)
+
+    # Verify it's a valid warehouse
+    if not wh.dwh_dir.exists():
+        click.echo("Error: Not a warehouse directory (missing .dwh/)", err=True)
+        click.echo(f"Path: {path}")
+        click.echo()
+        click.echo("Initialize a warehouse with:")
+        click.echo("  dwh init <path>")
+        sys.exit(1)
+
+    # Determine registry name
+    registry_name = name or path.name
+
+    # Load global config
+    global_config = GlobalConfig.load()
+
+    # Check if already registered
+    if registry_name in global_config.warehouses:
+        existing_path = global_config.warehouses[registry_name].path
+        if existing_path == path:
+            click.echo(
+                f"Warehouse '{registry_name}' is already registered at this path."
+            )
+            return
+        else:
+            click.echo(
+                f"Error: Name '{registry_name}' already registered at {existing_path}",
+                err=True,
+            )
+            click.echo()
+            click.echo("Use a different name with --name option:")
+            click.echo(f"  dwh warehouse register {path} --name <unique-name>")
+            sys.exit(1)
+
+    # Read warehouse config for display name
+    try:
+        import tomllib
+
+        if wh.config_path.exists():
+            with open(wh.config_path, "rb") as f:
+                config = tomllib.load(f)
+                display_name = config.get("name", registry_name)
+        else:
+            display_name = registry_name
+    except Exception:
+        display_name = registry_name
+
+    # Register warehouse
+    global_config.add_warehouse(
+        name=registry_name, path=path, display_name=display_name
+    )
+    global_config.save()
+
+    click.echo(f"Registered warehouse: {registry_name}")
+    click.echo(f"  Path: {path}")
+    click.echo(f"  Display name: {display_name}")
+
+    # Auto-select if first warehouse
+    if len(global_config.warehouses) == 1:
+        global_config.default_warehouse = registry_name
+        global_config.save()
+        click.echo()
+        click.echo("Selected as active warehouse (first registered)")
+
+
 def _collect_commands(
     cmd: click.Command, prefix: str = "", override_name: str | None = None
 ) -> list[tuple[str, str, list, list]]:

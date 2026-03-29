@@ -80,6 +80,126 @@ class TestWarehouseList:
         assert "*" in wh_line
 
 
+class TestWarehouseAdd:
+    """Test warehouse add command."""
+
+    def test_add_existing_warehouse(self, runner, tmp_path):
+        """Add an existing warehouse to registry."""
+        # Create warehouse manually (not through init to simulate forgotten warehouse)
+        wh_path = tmp_path / "existing_wh"
+        wh_path.mkdir()
+        dwh_dir = wh_path / ".dwh"
+        dwh_dir.mkdir()
+        (dwh_dir / "config.toml").write_text('name = "Existing Warehouse"\n')
+
+        # Add to registry
+        result = run_cli(runner, ["warehouse", "add", str(wh_path)])
+
+        assert result.exit_code == 0
+        assert "Registered warehouse: existing_wh" in result.output
+        assert str(wh_path) in result.output
+
+        # Verify it appears in list
+        result = run_cli(runner, ["warehouse", "list"])
+        assert "existing_wh" in result.output
+
+    def test_add_with_custom_name(self, runner, tmp_path):
+        """Add warehouse with custom registry name."""
+        wh_path = tmp_path / "my_warehouse"
+        wh_path.mkdir()
+        (wh_path / ".dwh").mkdir()
+
+        result = run_cli(
+            runner, ["warehouse", "add", str(wh_path), "--name", "custom_name"]
+        )
+
+        assert result.exit_code == 0
+        assert "Registered warehouse: custom_name" in result.output
+
+        # Verify custom name in list
+        result = run_cli(runner, ["warehouse", "list"])
+        assert "custom_name" in result.output
+
+    def test_add_non_warehouse_fails(self, runner, tmp_path):
+        """Add non-warehouse directory should fail."""
+        non_wh = tmp_path / "not_a_warehouse"
+        non_wh.mkdir()
+
+        result = run_cli(runner, ["warehouse", "add", str(non_wh)])
+
+        assert result.exit_code != 0
+        assert "not a warehouse" in result.output.lower()
+        assert "missing .dwh" in result.output.lower()
+
+    def test_add_already_registered_idempotent(self, runner, tmp_path):
+        """Adding already registered warehouse is idempotent."""
+        # Create and add warehouse
+        wh_path = tmp_path / "test_wh"
+        wh_path.mkdir()
+        (wh_path / ".dwh").mkdir()
+
+        run_cli(runner, ["warehouse", "add", str(wh_path)])
+
+        # Add again
+        result = run_cli(runner, ["warehouse", "add", str(wh_path)])
+
+        assert result.exit_code == 0
+        assert "already registered" in result.output.lower()
+
+    def test_add_name_conflict_fails(self, runner, tmp_path):
+        """Adding warehouse with conflicting name fails."""
+        # Create two warehouses
+        wh1 = tmp_path / "wh1"
+        wh1.mkdir()
+        (wh1 / ".dwh").mkdir()
+
+        wh2 = tmp_path / "wh2"
+        wh2.mkdir()
+        (wh2 / ".dwh").mkdir()
+
+        # Add first
+        run_cli(runner, ["warehouse", "add", str(wh1), "--name", "mywarehouse"])
+
+        # Try to add second with same name
+        result = run_cli(
+            runner, ["warehouse", "add", str(wh2), "--name", "mywarehouse"]
+        )
+
+        assert result.exit_code != 0
+        assert "already registered" in result.output.lower()
+        assert str(wh1) in result.output
+
+    def test_add_auto_selects_first(self, runner, tmp_path):
+        """First added warehouse is auto-selected."""
+        wh_path = tmp_path / "first"
+        wh_path.mkdir()
+        (wh_path / ".dwh").mkdir()
+
+        result = run_cli(runner, ["warehouse", "add", str(wh_path)])
+
+        assert result.exit_code == 0
+        assert "Selected as active warehouse" in result.output
+
+        # Verify selection
+        result = run_cli(runner, ["warehouse", "list"])
+        lines = result.output.split("\n")
+        wh_line = next(line for line in lines if "first" in line)
+        assert "*" in wh_line
+
+    def test_add_reads_display_name_from_config(self, runner, tmp_path):
+        """Add reads display name from warehouse config."""
+        wh_path = tmp_path / "my_wh"
+        wh_path.mkdir()
+        dwh_dir = wh_path / ".dwh"
+        dwh_dir.mkdir()
+        (dwh_dir / "config.toml").write_text('name = "My Project Documents"\n')
+
+        result = run_cli(runner, ["warehouse", "add", str(wh_path)])
+
+        assert result.exit_code == 0
+        assert "Display name: My Project Documents" in result.output
+
+
 class TestWarehouseSelect:
     """Test warehouse select command."""
 
