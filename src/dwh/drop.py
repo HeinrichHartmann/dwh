@@ -46,6 +46,7 @@ class Drop:
     created_at: str
     entries: list[Entry]
     auto_classified_count: int = 0
+    tree_fingerprint: str | None = None
 
 
 @dataclass
@@ -84,6 +85,30 @@ def compute_hash(file_path: Path) -> str:
     with open(file_path, "rb") as f:
         while chunk := f.read(8192):
             sha256.update(chunk)
+    return sha256.hexdigest()
+
+
+def compute_tree_fingerprint(entries: list["Entry"]) -> str:
+    """Compute fingerprint of an entry tree.
+
+    Fingerprint is SHA-256 hash of sorted (relative_path, blob_hash) pairs.
+    This allows detection of duplicate drops with identical content.
+
+    Args:
+        entries: List of Entry objects from a drop
+
+    Returns:
+        Hex string of tree fingerprint
+    """
+    # Create sorted list of (relative_path, blob_hash) tuples
+    pairs = sorted((e.relative_path, e.blob_hash) for e in entries)
+
+    # Compute hash of concatenated pairs
+    sha256 = hashlib.sha256()
+    for rel_path, blob_hash in pairs:
+        # Encode as "path:hash\n" for each entry
+        sha256.update(f"{rel_path}:{blob_hash}\n".encode("utf-8"))
+
     return sha256.hexdigest()
 
 
@@ -141,14 +166,18 @@ def apply_drop_to_db(
     conn: sqlite3.Connection, receipt: dict, entries: list[Entry]
 ) -> None:
     """Apply drop to database."""
+    # Compute tree fingerprint from entries
+    tree_fingerprint = compute_tree_fingerprint(entries)
+
     # Insert drop record
     conn.execute(
-        "INSERT INTO drops (id, message, actor, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO drops (id, message, actor, created_at, tree_fingerprint) VALUES (?, ?, ?, ?, ?)",
         (
             receipt["drop_id"],
             receipt["message"],
             receipt["actor"],
             receipt["created_at"],
+            tree_fingerprint,
         ),
     )
 
@@ -361,6 +390,70 @@ def create_classifications(
     return len(classifications)
 
 
+def compute_tree_fingerprint_from_paths(paths: list[Path]) -> str:
+    """Compute tree fingerprint from file paths before import.
+
+    This allows duplicate detection before actually importing.
+
+    Args:
+        paths: List of file/directory paths to import
+
+    Returns:
+        Tree fingerprint hex string
+    """
+    # Expand paths to individual files
+    files = expand_paths(paths)
+
+    # Compute (relative_path, blob_hash) pairs
+    pairs = []
+    for file_path in files:
+        # Compute relative path (same as import would do)
+        rel_path = compute_relative_path(file_path, paths)
+        # Compute blob hash
+        blob_hash = compute_hash(file_path)
+        pairs.append((str(rel_path), blob_hash))
+
+    # Sort and hash (same as compute_tree_fingerprint)
+    pairs.sort()
+    sha256 = hashlib.sha256()
+    for rel_path, blob_hash in pairs:
+        sha256.update(f"{rel_path}:{blob_hash}\n".encode("utf-8"))
+
+    return sha256.hexdigest()
+
+
+def check_duplicate_drop(
+    tree_fingerprint: str, conn: sqlite3.Connection
+) -> dict | None:
+    """Check if a drop with the same tree fingerprint exists.
+
+    Args:
+        tree_fingerprint: Tree fingerprint to check
+        conn: Database connection
+
+    Returns:
+        Drop metadata dict if duplicate found, None otherwise
+    """
+    row = conn.execute(
+        """SELECT id, message, actor, created_at
+           FROM drops
+           WHERE tree_fingerprint = ?
+           ORDER BY created_at DESC
+           LIMIT 1""",
+        (tree_fingerprint,),
+    ).fetchone()
+
+    if row:
+        return {
+            "drop_id": row["id"],
+            "message": row["message"],
+            "actor": row["actor"],
+            "created_at": row["created_at"],
+        }
+
+    return None
+
+
 def drop_import(
     paths: list[Path],
     message: str,
@@ -422,6 +515,9 @@ def drop_import(
     entries = derive_entries(tree_dir, drop_id)
     apply_drop_to_db(conn, receipt, entries)
 
+    # Compute tree fingerprint
+    tree_fingerprint = compute_tree_fingerprint(entries)
+
     # Auto-classify in-tree files
     auto_classified_count = 0
     if in_tree_files:
@@ -449,6 +545,7 @@ def drop_import(
         created_at=receipt["created_at"],
         entries=entries,
         auto_classified_count=auto_classified_count,
+        tree_fingerprint=tree_fingerprint,
     )
 
 

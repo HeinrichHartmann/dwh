@@ -74,27 +74,29 @@ This fits document types like invoices, statements, receipts, and contracts,
 where re-importing the same bytes usually means "this is the same document
 again."
 
-Track blob classifications to enable auto-triage:
+**V1 uses existing tables:** Instead of creating a new table, we derive
+classification suggestions from the existing `documents` and `entries` tables:
 
 ```sql
-CREATE TABLE blob_classifications (
-    blob_hash TEXT PRIMARY KEY,
-    category TEXT NOT NULL,           -- suggested category (last wins)
-    last_seen_name TEXT,              -- display hint only
-    first_classified_at TEXT NOT NULL,
-    last_classified_at TEXT NOT NULL,
-    classification_count INTEGER NOT NULL DEFAULT 1
-);
+-- Get most recent category for a blob
+SELECT d.category
+FROM documents d
+JOIN entries e ON d.entry_id = e.id
+WHERE e.blob_hash = ?
+ORDER BY d.created_at DESC
+LIMIT 1
 ```
 
-**V1 Simplification:** This table uses a simple "last classification wins" strategy.
+**V1 Simplification:** This query uses a simple "last classification wins" strategy.
 If the same blob is classified to different categories over time, the most recent
 classification becomes the suggestion. This works well for the common case where
 identical content represents the same document.
 
-**Important:** `blob_classifications` is a derived suggestion cache, not the
-source of truth. The source of truth remains the append-only history of
-classification events.
+**Benefits of using existing tables:**
+- No duplicate data or cache invalidation issues
+- Source of truth is the existing classification records
+- Existing indexes (`idx_entries_blob_hash`, `idx_documents_entry_id`) handle lookups
+- If performance becomes an issue, can add materialized view later
 
 **What v1 Does NOT Address:**
 
@@ -163,15 +165,19 @@ def triage_suggest(triage_dir, staging_dir, conn):
 
         hash = compute_hash(file)
 
-        # Check classification memory
-        memory = conn.execute(
-            "SELECT category FROM blob_classifications WHERE blob_hash = ?",
-            (hash,)
-        ).fetchone()
+        # Check for previous classification (last wins)
+        result = conn.execute("""
+            SELECT d.category
+            FROM documents d
+            JOIN entries e ON d.entry_id = e.id
+            WHERE e.blob_hash = ?
+            ORDER BY d.created_at DESC
+            LIMIT 1
+        """, (hash,)).fetchone()
 
-        if memory:
+        if result:
             # Known blob - auto-classify to staging
-            category = memory['category']
+            category = result['category']
             target = staging_dir / category / file.name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(file, target)
@@ -205,6 +211,12 @@ _staging/ cleared.
 **Algorithm:**
 ```python
 def triage_merge(staging_dir, warehouse_root, history_dir, conn):
+    # Get current triage state to find entry_ids
+    state = conn.execute("SELECT drop_id FROM triage_state WHERE id = 1").fetchone()
+    if not state:
+        raise TriageError("No triage in progress")
+
+    drop_id = state['drop_id']
     classifications = []
 
     # Collect all files in staging
@@ -221,30 +233,46 @@ def triage_merge(staging_dir, warehouse_root, history_dir, conn):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(file, target)
 
-        # Record classification by blob hash
+        # Find entry_id for this file
         hash = compute_hash(target)
+        entry = conn.execute(
+            "SELECT id FROM entries WHERE drop_id = ? AND blob_hash = ?",
+            (drop_id, hash)
+        ).fetchone()
+
+        if not entry:
+            continue  # Shouldn't happen, but skip if no match
+
+        # Insert document record (creates classification)
+        cursor = conn.execute("""
+            INSERT INTO documents (entry_id, name, category)
+            VALUES (?, ?, ?)
+        """, (entry['id'], file.name, category))
+
         classifications.append({
-            'blob_hash': hash,
+            'entry_id': entry['id'],
+            'document_id': cursor.lastrowid,
             'category': category,
             'name': file.name
         })
 
     # Write classification event to history
-    write_classification_event(classifications, history_dir)
+    if classifications:
+        seq_num = get_next_history_number(history_dir)
+        classify_file = history_dir / f"{seq_num:03d}_classify.json"
 
-    # Update blob classification memory (last wins)
-    for c in classifications:
-        conn.execute("""
-            INSERT INTO blob_classifications
-            (blob_hash, category, last_seen_name, first_classified_at,
-             last_classified_at, classification_count)
-            VALUES (?, ?, ?, ?, ?, 1)
-            ON CONFLICT(blob_hash) DO UPDATE SET
-                category = excluded.category,
-                last_seen_name = excluded.last_seen_name,
-                last_classified_at = excluded.last_classified_at,
-                classification_count = classification_count + 1
-        """, (c['blob_hash'], c['category'], c['name'], now(), now()))
+        classification_record = {
+            "type": "classify",
+            "created_at": now(),
+            "actor": getpass.getuser(),
+            "message": "Triage merge (auto-classified)",
+            "classifications": classifications,
+        }
+
+        with open(classify_file, "w") as f:
+            json.dump(classification_record, f, indent=2)
+
+        conn.commit()
 
     # Clear staging
     shutil.rmtree(staging_dir)
@@ -252,19 +280,20 @@ def triage_merge(staging_dir, warehouse_root, history_dir, conn):
 
 #### Memory Updates
 
-Classification memory is updated during:
+Classification memory is automatically maintained through the existing `documents` table:
 
 1. **Manual triage sync** (existing workflow):
    - User moves files in `_triage/` to categories
-   - On sync, record classifications and update memory
+   - On sync, inserts new records into `documents` table
+   - New classifications naturally become "most recent" for their blobs
 
 2. **Merge command** (new workflow):
    - Files in `_staging/` merged to warehouse
-   - Record classifications and update memory
+   - Inserts new records into `documents` table
+   - New classifications naturally become "most recent" for their blobs
 
-Both workflows update `blob_classifications` table using the same "last wins"
-strategy. The classification events written to history track the full provenance
-as before.
+Both workflows maintain the same append-only history. The suggestion query simply
+finds the most recent document record for each blob using `ORDER BY d.created_at DESC`.
 
 ## Workflow Examples
 
@@ -371,11 +400,11 @@ Analyzing 50 files...
 3. Check for duplicates, prompt user
 4. **Estimated effort:** 2-3 hours
 
-### Phase 2: Blob Classification Memory
+### Phase 2: Classification Query Function
 
-1. Create `blob_classifications` table
-2. Update `triage sync` to populate memory
-3. **Estimated effort:** 3-4 hours
+1. Implement helper function to query most recent blob classification
+2. Add tests to verify "last wins" behavior across multiple classifications
+3. **Estimated effort:** 1-2 hours
 
 ### Phase 3: Staging Workflow
 
@@ -399,7 +428,7 @@ Analyzing 50 files...
 3. Update README with new workflow
 4. **Estimated effort:** 4-5 hours
 
-**Total effort:** ~15-18 hours
+**Total effort:** ~12-15 hours (reduced by removing separate classification table)
 
 ## Future Enhancements
 
@@ -451,13 +480,13 @@ Choose destination:
 **Disadvantages:**
 - More complexity in triage workflow
 - Additional `_staging/` directory to understand
-- Memory table requires maintenance
+- Query performance may degrade with large classification history (mitigate with materialized view if needed)
 - V1 doesn't handle ambiguous blobs (same content, different intended categories)
 
 **Mitigations:**
 - Staging area allows review before merge
 - User can move files between `_staging/` and `_triage/` to adjust
-- Classification memory can be cleared/reset if needed
+- No separate cache to maintain - uses existing tables
 - Clear command names: suggest (tentative) → merge (commit)
 - Future versions will add editable filing table for complex cases
 
@@ -469,9 +498,9 @@ Implement drop duplicate detection and auto-triage with staging workflow using t
 
 Start with blob identity matching only. Entry path matching is future work.
 
-Treat blob classification memory as a derived suggestion cache. Final
-classification history continues to be recorded by `entry_id`, and blobs with
-conflicting prior classifications are excluded from auto-triage.
+Use existing `documents` and `entries` tables to derive classification suggestions
+via JOIN query. No separate cache table needed - the "last wins" behavior is
+achieved by ordering by `created_at DESC`.
 
 ## References
 

@@ -121,6 +121,26 @@ def drop_import_cmd(message: str, paths: tuple[Path, ...]):
         wh = warehouse.resolve_warehouse()
         conn = wh.connect()
 
+        # Check for duplicate drop before importing (ADR-005)
+        tree_fingerprint = drop.compute_tree_fingerprint_from_paths(list(paths))
+        duplicate = drop.check_duplicate_drop(tree_fingerprint, conn)
+
+        if duplicate:
+            # Prompt user about duplicate
+            click.echo()
+            click.echo("⚠ This exact tree was imported before:")
+            click.echo(f"  Drop: {duplicate['drop_id']}")
+            click.echo(f"  Date: {duplicate['created_at']}")
+            click.echo(f"  Message: {duplicate['message']}")
+            click.echo()
+
+            if not click.confirm(
+                "Import again? (Creates record that nothing changed)", default=False
+            ):
+                click.echo("Import cancelled.")
+                conn.close()
+                return
+
         result = drop.drop_import(list(paths), message, wh.root, wh.history_dir, conn)
 
         click.echo(f"Imported {len(result.entries)} files")

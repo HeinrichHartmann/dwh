@@ -22,7 +22,8 @@ CREATE TABLE drops (
     id TEXT PRIMARY KEY,
     message TEXT NOT NULL,
     actor TEXT NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    tree_fingerprint TEXT
 );
 
 CREATE TABLE entries (
@@ -53,6 +54,7 @@ CREATE INDEX idx_entries_drop_id ON entries(drop_id);
 CREATE INDEX idx_entries_blob_hash ON entries(blob_hash);
 CREATE INDEX idx_documents_entry_id ON documents(entry_id);
 CREATE INDEX idx_documents_category ON documents(category);
+CREATE INDEX idx_drops_tree_fingerprint ON drops(tree_fingerprint);
 """
 
 
