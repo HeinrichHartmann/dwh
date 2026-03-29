@@ -219,3 +219,4 @@ See [DESIGN.md](DESIGN.md) for:
 - Database schema
 - Triage workflow details
 - Invariants and guarantees
+# Test hook

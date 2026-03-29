@@ -184,7 +184,9 @@ class TestImportMultiplePaths:
 
         # Verify both appear in tree
         history_dir = tmp_warehouse / "_history"
-        drop_dirs = [d for d in history_dir.iterdir() if d.is_dir() and "_drop_" in d.name]
+        drop_dirs = [
+            d for d in history_dir.iterdir() if d.is_dir() and "_drop_" in d.name
+        ]
         assert len(drop_dirs) == 1
         tree_dir = drop_dirs[0] / "tree"
 
