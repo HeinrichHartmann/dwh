@@ -300,12 +300,26 @@ dwh transform import -m "MESSAGE"
 #### `dwh transform merge`
 
 ```bash
-dwh transform merge -m "MESSAGE"
+dwh transform merge -m "MESSAGE" [-p PREFIX]
+
+Options:
+  -m, --message TEXT     Transformation description (required)
+  -p, --prefix PATH      Target prefix in archive (optional)
 
 # Creates drop from _output/
 # Auto-classifies outputs to archive
-# Classification: _output/path → archive/path
+# Classification: _output/path → PREFIX/path (or archive root if no prefix)
 # Clears _input/ and _output/
+
+Examples:
+  # Merge to archive root (preserves _output/ structure)
+  dwh transform merge -m "OCR batch"
+  # _output/file.pdf → archive/file.pdf
+
+  # Merge with prefix
+  dwh transform merge -m "OCR batch" -p "finance/taxes/2024"
+  # _output/file.pdf → finance/taxes/2024/file.pdf
+  # _output/sub/other.pdf → finance/taxes/2024/sub/other.pdf
 ```
 
 #### `dwh transform abort`
@@ -356,27 +370,30 @@ Derived content:
 
 ### Merge Behavior
 
-`dwh transform merge` preserves `_output/` structure in archive:
+`dwh transform merge` preserves `_output/` structure, optionally under a prefix:
 
+**Without prefix (merge to root):**
 ```
 _output/
-  report.pdf          → archive/report.pdf
+  report.pdf          → report.pdf
   attachments/
-    data.xlsx         → archive/attachments/data.xlsx
-    chart.png         → archive/attachments/chart.png
+    data.xlsx         → attachments/data.xlsx
+    chart.png         → attachments/chart.png
 ```
 
-**Note:** "archive" here means the warehouse root (user's category tree). Files merge to root-level paths from `_output/`.
-
-If user wants specific category:
+**With prefix:**
 ```bash
-# Structure output appropriately
-$ mkdir -p _output/finance/reports/2024/
-$ mv result.pdf _output/finance/reports/2024/
-
-$ dwh transform merge -m "Q1 report"
-# Merges to: finance/reports/2024/result.pdf
+$ dwh transform merge -m "Q1 report" -p "finance/reports/2024"
 ```
+```
+_output/
+  report.pdf          → finance/reports/2024/report.pdf
+  attachments/
+    data.xlsx         → finance/reports/2024/attachments/data.xlsx
+    chart.png         → finance/reports/2024/attachments/chart.png
+```
+
+The `--prefix` option makes it easy to target a specific category without restructuring `_output/`.
 
 ### Workflow Examples
 
