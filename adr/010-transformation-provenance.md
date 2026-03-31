@@ -29,13 +29,54 @@ Implement **container-to-container transformations** with working directories.
 ### Core Concept
 
 ```
-Query/Selection → _input/    ← Read-only view of inputs
-                  _output/   ← User writes transformation results
+Query/Selection → _input/      ← Read-only view of inputs
+                  _output/     ← User writes transformation results
+                  _artifacts/  ← Optional: scripts, logs, notes
                       ↓
-                  Drop + Provenance Record
+                  Output Drop + Artifacts Drop + Provenance Record
 ```
 
 **Key principle:** We don't operate on individual files. We operate on **containers** (sets of files defined by query or selection).
+
+### Drop Visibility
+
+Drops have a `visibility` attribute:
+
+```sql
+CREATE TABLE drops (
+    id TEXT PRIMARY KEY,
+    message TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at TIMESTAMP,
+    visibility TEXT DEFAULT 'visible'  -- 'visible' | 'hidden'
+);
+```
+
+**Semantics:**
+- `visible` → Appears in triage queue, needs classification
+- `hidden` → Stored but skips triage, just exists
+
+**Use cases for hidden drops:**
+- Transformation artifacts (scripts, logs)
+- Reference materials you don't want to organize
+- System/internal content
+- Bulk archives you just want preserved
+
+**CLI support:**
+```bash
+# Regular import (visible, needs triage)
+$ dwh drop import ~/invoices/
+
+# Hidden import (stored, no triage)
+$ dwh drop import --hidden ~/scripts/
+
+# List commands
+$ dwh drop list              # Only visible
+$ dwh drop list --all        # All drops
+$ dwh drop list --hidden     # Only hidden
+```
+
+**Key insight:** Drop is the fundamental unit. We don't create variants—we add attributes like `visibility` to handle different use cases.
 
 ### Transformation Workflow
 
@@ -68,11 +109,13 @@ Populated _input/ with 10 files:
   ...
 
 Write transformation outputs to _output/
+Optionally save scripts/logs to _artifacts/
 ```
 
 **State:**
 - `_input/` populated with copies from blob storage
 - `_output/` created (empty)
+- `_artifacts/` created (empty, optional)
 - Transformation state recorded in database
 
 #### 2. Execute Transformation (External)
@@ -99,7 +142,25 @@ $ cp _input/draft.txt _output/final.txt && vim _output/final.txt
 $ ./my-transform-script.sh _input/ _output/
 ```
 
-**We do NOT specify or track the process** - just inputs and outputs.
+**Optionally capture process artifacts:**
+
+```bash
+# Save the script used
+$ cat > _artifacts/transform.sh << 'EOF'
+#!/bin/bash
+for f in _input/*.pdf; do
+    ocrmypdf "$f" "_output/$(basename "$f")"
+done
+EOF
+
+# Run and capture log
+$ bash _artifacts/transform.sh 2>&1 | tee _artifacts/output.log
+
+# Add notes
+$ echo "Used OCR with deskew, language=deu" > _artifacts/notes.txt
+```
+
+**We do NOT require process tracking** - but artifacts can be captured for provenance.
 
 #### 3. Complete Transformation
 
@@ -112,6 +173,8 @@ $ dwh transform import -m "OCR scanned invoices"
 Created drop: d_20260329_141000_def456
   Source: transformation t_20260329_140000_xyz789
   Files: 10
+Artifacts drop: d_20260329_141001_abc789 (hidden)
+  Files: 3 (transform.sh, output.log, notes.txt)
 
 Transformation complete.
 Run 'dwh triage checkout' to classify outputs.
@@ -119,11 +182,13 @@ Run 'dwh triage checkout' to classify outputs.
 
 **Option B: Merge (auto-classify to archive)**
 ```bash
-$ dwh transform merge -m "OCR scanned invoices"
+$ dwh transform merge -m "OCR scanned invoices" -p "finance/taxes/2024"
 
 Created drop: d_20260329_141000_def456
   Source: transformation t_20260329_140000_xyz789
   Files: 10
+Artifacts drop: d_20260329_141001_abc789 (hidden)
+  Files: 3
 
 Merged to archive:
   finance/taxes/2024/invoice-001-ocr.pdf
@@ -132,6 +197,8 @@ Merged to archive:
 
 Transformation complete.
 ```
+
+**Note:** Artifacts drop has `visibility: hidden` - it's stored but doesn't appear in triage queue.
 
 ### Directory Layout
 
@@ -144,6 +211,7 @@ warehouse/
   _triage/           ← Triage workspace
   _input/            ← Transformation inputs (read-only)
   _output/           ← Transformation outputs (write here)
+  _artifacts/        ← Transformation artifacts (optional)
   finance/           ← Archive categories
   work/
   ...
@@ -151,64 +219,74 @@ warehouse/
 
 ### History Record
 
-Transformation creates a history event:
+Transformation creates a history event. **Key principle:** No entry-level data in the record. Input is a query, output uses drop schema.
 
+**Location:** `_history/{seq}_transform_{transform_id}/`
+
+**Files:**
+```
+{seq}_transform_{transform_id}/
+  receipt.json       ← Transformation metadata
+  tree/              ← Output files (from _output/)
+```
+
+**receipt.json:**
 ```json
 {
   "type": "transformation",
-  "id": "t_20260329_140000_xyz789",
-  "created_at": "2026-03-29T14:00:00Z",
-  "actor": "heinrich",
+  "transform_id": "t_20260329_140000_xyz789",
   "message": "OCR scanned invoices",
+  "actor": "heinrich",
+  "created_at": "2026-03-29T14:00:00Z",
 
-  "input_spec": {
-    "type": "subtree",
-    "path": "finance/taxes/2024/"
+  "input": {
+    "query": "path:/finance/taxes/2024/scans/",
+    "tree_fingerprint": "sha256:abc123..."
   },
 
-  "inputs": [
-    {
-      "entry_id": "e_20260315_100000_aaa_001",
-      "blob_hash": "abc123...",
-      "path": "invoice-001.pdf",
-      "size": 45234
-    },
-    {
-      "entry_id": "e_20260320_140000_bbb_003",
-      "blob_hash": "def456...",
-      "path": "invoice-002.pdf",
-      "size": 52100
-    }
-  ],
+  "output": {
+    "drop_id": "d_20260329_140100_def456",
+    "message": "OCR scanned invoices",
+    "actor": "heinrich",
+    "created_at": "2026-03-29T14:01:00Z",
+    "tree_fingerprint": "sha256:xyz789..."
+  },
 
-  "outputs": [
-    {
-      "entry_id": "e_20260329_141000_def_001",
-      "blob_hash": "xyz789...",
-      "path": "invoice-001-ocr.pdf",
-      "size": 48500
-    },
-    {
-      "entry_id": "e_20260329_141000_def_002",
-      "blob_hash": "uvw012...",
-      "path": "invoice-002-ocr.pdf",
-      "size": 55200
-    }
-  ],
-
-  "result_drop_id": "d_20260329_141000_def456",
-  "result_type": "merge"
+  "artifacts": {
+    "drop_id": "d_20260329_140101_abc789",
+    "visibility": "hidden"
+  }
 }
 ```
 
+**Notes:**
+- `input.query` uses query language (`path:/...` or `drop:d_...`)
+- `input.tree_fingerprint` records exact state at transform start
+- `output` uses **exact same schema as drop receipt**
+- `artifacts` references hidden drop (optional, only if `_artifacts/` non-empty)
+- For merge: Creates **two** history records (transform + separate classify)
+
+See ADR-010-history-record-comparison.md for full comparison of record types.
+
 ### Database Schema
+
+**Updated table: drops (add visibility)**
+```sql
+CREATE TABLE drops (
+    id TEXT PRIMARY KEY,
+    message TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    visibility TEXT DEFAULT 'visible'  -- 'visible' | 'hidden'
+);
+```
 
 **New table: transformation_state**
 ```sql
 CREATE TABLE transformation_state (
     id INTEGER PRIMARY KEY CHECK(id = 1),  -- Singleton
     transformation_id TEXT NOT NULL,
-    input_spec TEXT NOT NULL,  -- JSON: query, drop_id, or paths
+    input_query TEXT NOT NULL,  -- Query string: "path:/..." or "drop:..."
     started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
@@ -219,27 +297,20 @@ CREATE TABLE transformations (
     id TEXT PRIMARY KEY,  -- t_YYYYMMDD_HHMMSS_HASH
     message TEXT NOT NULL,
     actor TEXT NOT NULL,
-    input_spec TEXT NOT NULL,  -- JSON
-    result_drop_id TEXT REFERENCES drops(id),
-    result_type TEXT NOT NULL,  -- 'import' or 'merge'
+    input_query TEXT NOT NULL,  -- Query string
+    input_fingerprint TEXT NOT NULL,  -- tree_fingerprint of input
+    output_drop_id TEXT REFERENCES drops(id),
+    artifacts_drop_id TEXT REFERENCES drops(id),  -- Optional, visibility=hidden
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
-**New table: transformation_inputs**
-```sql
-CREATE TABLE transformation_inputs (
-    transformation_id TEXT NOT NULL REFERENCES transformations(id),
-    entry_id TEXT NOT NULL REFERENCES entries(id),
-    input_path TEXT NOT NULL,  -- Path in _input/
-    PRIMARY KEY (transformation_id, entry_id)
-);
-```
-
-**Outputs tracked via entries table:**
+**Tracking:**
 - Output entries reference their source drop
+- Artifacts drop has `visibility: hidden`
 - Drop references transformation via history record
 - Can query: "What transformation created this drop?"
+- Can query: "What artifacts were used in this transformation?"
 
 ### Commands
 
@@ -269,7 +340,7 @@ $ dwh transform status
 
 Transformation in progress: t_20260329_140000_xyz789
 Started: 2026-03-29 14:00:00
-Input spec: subtree finance/taxes/2024/
+Input query: path:/finance/taxes/2024/
 
 _input/ (10 files, read-only):
   invoice-001.pdf (45 KB)
@@ -279,6 +350,10 @@ _input/ (10 files, read-only):
 _output/ (2 files):
   merged.pdf (120 KB)
   summary.txt (2 KB)
+
+_artifacts/ (2 files):
+  transform.sh (256 B)
+  output.log (4 KB)
 
 Commands:
   dwh transform import -m "..."   Import outputs as new drop
@@ -291,10 +366,10 @@ Commands:
 ```bash
 dwh transform import -m "MESSAGE"
 
-# Creates drop from _output/
+# Creates drop from _output/ (visibility: visible, needs triage)
+# Creates drop from _artifacts/ if non-empty (visibility: hidden)
 # Links to transformation provenance
-# Clears _input/ and _output/
-# Drop needs triage
+# Clears _input/, _output/, _artifacts/
 ```
 
 #### `dwh transform merge`
@@ -306,10 +381,11 @@ Options:
   -m, --message TEXT     Transformation description (required)
   -p, --prefix PATH      Target prefix in archive (optional)
 
-# Creates drop from _output/
-# Auto-classifies outputs to archive
+# Creates drop from _output/ (visibility: visible)
+# Creates drop from _artifacts/ if non-empty (visibility: hidden)
+# Auto-classifies outputs to archive (separate classify record)
 # Classification: _output/path → PREFIX/path (or archive root if no prefix)
-# Clears _input/ and _output/
+# Clears _input/, _output/, _artifacts/
 
 Examples:
   # Merge to archive root (preserves _output/ structure)
@@ -330,6 +406,7 @@ $ dwh transform abort
 Discarding transformation t_20260329_140000_xyz789
 Removed _input/ (10 files)
 Removed _output/ (2 files)
+Removed _artifacts/ (2 files)
 ```
 
 ### Provenance Queries
@@ -346,11 +423,11 @@ Hash: xyz789...
 Transformation: t_20260329_140000_xyz789
   Message: "Merge Q1 invoices"
   Created: 2026-03-29 14:01:00
+  Input query: path:/finance/taxes/2024/Q1/
 
-  Inputs (3 files):
-    finance/taxes/2024/invoice-001.pdf
-    finance/taxes/2024/invoice-002.pdf
-    finance/taxes/2024/invoice-003.pdf
+  Artifacts: d_20260329_140101_abc789
+    transform.sh
+    output.log
 ```
 
 **"What was derived from this document?"**
@@ -366,6 +443,17 @@ Derived content:
 2. Transformation: t_20260401_100000_abc123
    Message: "OCR processing"
    Output: finance/taxes/2024/invoice-001-searchable.pdf
+```
+
+**"Show artifacts for a transformation"**
+```bash
+$ dwh drop show d_20260329_140101_abc789
+
+Drop: d_20260329_140101_abc789 (hidden)
+Message: "Merge Q1 invoices [artifacts]"
+Files:
+  transform.sh (256 B)
+  output.log (4 KB)
 ```
 
 ### Merge Behavior
@@ -490,15 +578,18 @@ Merged: summary.md → archive
 - Process-agnostic (any tool/script/manual)
 - Integrates with existing drop/triage model
 - Enables powerful trace queries
+- Artifacts captured as hidden drops (reuses drop abstraction)
+- `visibility` attribute keeps drop as single fundamental unit
 
 **Disadvantages:**
-- Two working directories (_input/, _output/) to understand
+- Three working directories (_input/, _output/, _artifacts/) to understand
 - Can't have triage and transformation simultaneously (v1)
 - No partial transformations (all-or-nothing)
 - Input query language not yet defined
 
 **Mitigations:**
 - Clear status command shows state
+- _artifacts/ is optional (empty = no artifacts drop created)
 - Future: Allow concurrent operations
 - Start simple (paths/drops), add queries later
 
@@ -536,11 +627,24 @@ $ dwh transform start --record finance/taxes/
 Implement container-to-container transformations with:
 - `_input/` (populated from query/paths)
 - `_output/` (user writes results)
+- `_artifacts/` (optional: scripts, logs, notes)
 - `dwh transform start` to begin
 - `dwh transform import` to create drop (needs triage)
 - `dwh transform merge` to create drop and auto-classify
 
-Transformation history records input entries and output entries, enabling full provenance tracking without specifying the transformation process.
+**Drop visibility:**
+- Add `visibility` attribute to drops (`visible` | `hidden`)
+- Hidden drops skip triage queue, just stored
+- Artifacts are created as hidden drops
+- `dwh drop list --all` shows all, `--hidden` shows only hidden
+
+**History record format:**
+- Input: query string + tree_fingerprint (no entry-level data)
+- Output: same schema as drop receipt
+- Artifacts: reference to hidden drop (optional)
+- For merge: separate classify record (two history events)
+
+Transformation history records input query and output drop, enabling full provenance tracking without specifying the transformation process. Artifacts captured as hidden drops reuse the fundamental drop abstraction.
 
 ## References
 
