@@ -100,6 +100,52 @@ def rebuild():
         sys.exit(1)
 
 
+@main.command()
+def migrate():
+    """Migrate database schema to latest version."""
+    try:
+        wh = warehouse.resolve_warehouse()
+        conn = db.connect(wh.db_path)
+
+        try:
+            current_version = db.get_schema_version(conn)
+            if current_version is None:
+                click.echo("Error: Database not initialized.", err=True)
+                sys.exit(1)
+
+            click.echo(f"Current schema version: {current_version}")
+            click.echo(f"Target schema version: {db.SCHEMA_VERSION}")
+
+            if current_version >= db.SCHEMA_VERSION:
+                click.echo("Database is up to date.")
+                sys.exit(0)
+
+            click.echo()
+            click.echo("Applying migrations...")
+
+            applied = db.migrate_database(conn)
+
+            click.echo()
+            for version in applied:
+                click.echo(f"✓ Migrated to version {version}")
+
+            click.echo()
+            click.echo("Migration complete.")
+
+        finally:
+            conn.close()
+
+    except warehouse.WarehouseNotFoundError:
+        click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(1)
+    except warehouse.NoWarehouseSpecifiedError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error during migration: {e}", err=True)
+        sys.exit(1)
+
+
 @main.group()
 def drop_cmd():
     """Manage drops (import events)."""
@@ -611,6 +657,221 @@ def triage_status_cmd():
 
     except warehouse.WarehouseNotFoundError:
         click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@main.group()
+def transform_group():
+    """Transformation workflow commands."""
+    pass
+
+
+transform_group.name = "transform"
+
+
+@transform_group.command("start")
+@click.argument("query")
+def transform_start(query: str):
+    """Start a transformation from a query.
+
+    Currently supports drop: queries only.
+    Example: dwh transform start drop:d_20260329_120000_abc123
+    """
+    from dwh import db, transform
+
+    try:
+        wh = warehouse.resolve_warehouse()
+        conn = db.connect(wh.db_path)
+
+        try:
+            # Check if database needs migration
+            if db.needs_migration(conn):
+                current = db.get_schema_version(conn)
+                click.echo(f"Error: Database schema is outdated (version {current}, need {db.SCHEMA_VERSION})", err=True)
+                click.echo("Run 'dwh migrate' to upgrade the database.", err=True)
+                sys.exit(1)
+            state = transform.start_transformation(
+                input_spec=query,
+                warehouse_root=wh.root,
+                conn=conn,
+            )
+
+            click.echo(f"Transformation: {state.transformation_id}")
+            click.echo()
+            click.echo(f"Input spec: {state.input_spec}")
+            click.echo(f"Started: {state.started_at}")
+            click.echo()
+
+            # Show input files
+            status = transform.get_transformation_status(wh.root, conn)
+            input_count = len(status["input_files"])
+            total_size = sum(f["size"] for f in status["input_files"])
+
+            click.echo(f"Populated _input/ with {input_count} files ({total_size:,} bytes)")
+            click.echo()
+            click.echo("Write transformation outputs to _output/")
+            click.echo()
+            click.echo("Commands:")
+            click.echo("  dwh transform status          Show transformation status")
+            click.echo("  dwh transform import -m ...   Import outputs as new drop")
+            click.echo("  dwh transform abort           Discard transformation")
+
+        finally:
+            conn.close()
+
+    except warehouse.WarehouseNotFoundError:
+        click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(1)
+    except warehouse.NoWarehouseSpecifiedError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except transform.TransformationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@transform_group.command("import")
+@click.option("-m", "--message", required=True, help="Transformation description")
+def transform_import(message: str):
+    """Import transformation outputs as a new drop."""
+    from dwh import db, transform
+
+    try:
+        wh = warehouse.resolve_warehouse()
+        conn = db.connect(wh.db_path)
+
+        try:
+            result = transform.import_transformation(
+                message=message,
+                warehouse_root=wh.root,
+                history_dir=wh.history_dir,
+                conn=conn,
+            )
+
+            click.echo(f"Created drop: {result['drop_id']}")
+            click.echo(f"  Transformation: {result['transformation_id']}")
+            click.echo(f"  Files: {result['files']}")
+            click.echo()
+            click.echo("Transformation complete.")
+            click.echo("Run 'dwh triage checkout' to classify outputs.")
+
+        finally:
+            conn.close()
+
+    except warehouse.WarehouseNotFoundError:
+        click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(1)
+    except warehouse.NoWarehouseSpecifiedError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except transform.TransformationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@transform_group.command("status")
+def transform_status():
+    """Show current transformation status."""
+    from dwh import db, transform
+
+    try:
+        wh = warehouse.resolve_warehouse()
+        conn = db.connect(wh.db_path)
+
+        try:
+            status = transform.get_transformation_status(wh.root, conn)
+
+            if not status["active"]:
+                click.echo("No transformation active.")
+                click.echo()
+                click.echo("Start a transformation with:")
+                click.echo("  dwh transform start drop:DROP_ID")
+                sys.exit(0)
+
+            click.echo(f"Transformation in progress: {status['transformation_id']}")
+            click.echo(f"Started: {status['started_at']}")
+            click.echo(f"Input spec: {status['input_spec']}")
+            click.echo()
+
+            # Show input files
+            input_files = status["input_files"]
+            input_size = sum(f["size"] for f in input_files)
+            click.echo(f"_input/ ({len(input_files)} files, {input_size:,} bytes):")
+            for f in input_files[:10]:  # Show first 10
+                click.echo(f"  {f['path']} ({f['size']:,} bytes)")
+            if len(input_files) > 10:
+                click.echo(f"  ... and {len(input_files) - 10} more")
+            click.echo()
+
+            # Show output files
+            output_files = status["output_files"]
+            if output_files:
+                output_size = sum(f["size"] for f in output_files)
+                click.echo(f"_output/ ({len(output_files)} files, {output_size:,} bytes):")
+                for f in output_files[:10]:  # Show first 10
+                    click.echo(f"  {f['path']} ({f['size']:,} bytes)")
+                if len(output_files) > 10:
+                    click.echo(f"  ... and {len(output_files) - 10} more")
+            else:
+                click.echo("_output/ (empty)")
+            click.echo()
+
+            click.echo("Commands:")
+            click.echo("  dwh transform import -m ...   Import outputs as new drop")
+            click.echo("  dwh transform abort           Discard transformation")
+
+        finally:
+            conn.close()
+
+    except warehouse.WarehouseNotFoundError:
+        click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(1)
+    except warehouse.NoWarehouseSpecifiedError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@transform_group.command("abort")
+def transform_abort():
+    """Abort current transformation and clean up."""
+    from dwh import db, transform
+
+    try:
+        wh = warehouse.resolve_warehouse()
+        conn = db.connect(wh.db_path)
+
+        try:
+            result = transform.abort_transformation(wh.root, conn)
+
+            click.echo(f"Discarding transformation {result['transformation_id']}")
+            click.echo(f"Removed _input/ ({result['input_files_removed']} files)")
+            click.echo(f"Removed _output/ ({result['output_files_removed']} files)")
+            click.echo()
+            click.echo("Transformation aborted.")
+
+        finally:
+            conn.close()
+
+    except warehouse.WarehouseNotFoundError:
+        click.echo("Error: Not in a warehouse.", err=True)
+        sys.exit(1)
+    except warehouse.NoWarehouseSpecifiedError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except transform.TransformationError as e:
+        click.echo(f"Error: {e}", err=True)
         sys.exit(1)
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
