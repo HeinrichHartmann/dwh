@@ -66,29 +66,18 @@ Three history record types in DWH:
 
 ## 3. Transformation Record
 
-**Location:** `_history/{seq}_transform_{transform_id}.json`
+**Location:** `_history/{seq}_transform_{transform_id}/`
 
-**Format:**
-```json
-{
-  "type": "transformation",
-  "transform_id": "t_20260329_140000_xyz789",
-  "message": "OCR scanned invoices",
-  "actor": "heinrich",
-  "created_at": "2026-03-29T14:00:00Z",
-
-  "input": {
-    "type": "subtree",
-    "paths": ["finance/taxes/2024/scans/"]
-  },
-
-  "output": {
-    "drop_id": "d_20260329_140100_def456"
-  }
-}
+**Files:**
+```
+{seq}_transform_{transform_id}/
+  receipt.json       ← Transformation metadata
+  tree/              ← Output files (same as drop)
+    output-001.pdf
+    output-002.pdf
 ```
 
-**For merge (with auto-classification):**
+**receipt.json:**
 ```json
 {
   "type": "transformation",
@@ -98,31 +87,25 @@ Three history record types in DWH:
   "created_at": "2026-03-29T14:00:00Z",
 
   "input": {
-    "type": "subtree",
-    "paths": ["finance/taxes/2024/scans/"]
+    "query": "path:/finance/taxes/2024/scans/",
+    "tree_fingerprint": "sha256:abc123..."
   },
 
   "output": {
     "drop_id": "d_20260329_140100_def456",
-    "prefix": "finance/taxes/2024/ocr"
-  },
-
-  "classifications": [
-    {
-      "entry_id": "e_20260329_140100_def456_001",
-      "document_id": 145,
-      "category": "finance/taxes/2024/ocr",
-      "name": "invoice-001-ocr.pdf"
-    },
-    {
-      "entry_id": "e_20260329_140100_def456_002",
-      "document_id": 146,
-      "category": "finance/taxes/2024/ocr",
-      "name": "invoice-002-ocr.pdf"
-    }
-  ]
+    "message": "OCR scanned invoices",
+    "actor": "heinrich",
+    "created_at": "2026-03-29T14:01:00Z",
+    "tree_fingerprint": "sha256:xyz789..."
+  }
 }
 ```
+
+**That's it.** No entry-level data. No classifications embedded.
+
+**For merge:** Creates TWO history records:
+1. Transformation record (above)
+2. Separate classify record (standard format)
 
 **Purpose:** Record derived content with provenance link to inputs.
 
@@ -136,63 +119,69 @@ Three history record types in DWH:
 | `created_at` | ✓ | ✓ | ✓ |
 | `actor` | ✓ | ✓ | ✓ |
 | `message` | ✓ | ✓ | ✓ |
-| `drop_id` | ✓ (self) | - | ✓ (output) |
-| `tree_fingerprint` | ✓ | - | - |
-| `input` | - | - | ✓ (query spec) |
-| `classifications` | - | ✓ | ✓ (if merge) |
-| Has `tree/` folder | ✓ | - | - (output drop has it) |
+| `drop_id` | ✓ (self) | - | ✓ (in output) |
+| `tree_fingerprint` | ✓ | - | ✓ (input + output) |
+| `input` | - | - | ✓ (query + fingerprint) |
+| `output` | - | - | ✓ (same schema as drop) |
+| `classifications` | - | ✓ | - (separate record) |
+| Has `tree/` folder | ✓ | - | ✓ (output files) |
 
 ---
 
-## Input Specification Types
+## Input Query Language
 
-The transformation `input` field describes what was selected:
+The transformation `input.query` field uses a simple query language:
 
-**Subtree (paths in archive):**
+**Path query (subtree in archive):**
+```
+path:/finance/taxes/2024/scans/
+```
+
+**Drop query (all entries from a drop):**
+```
+drop:d_20260329_120000_abc123
+```
+
+**Multiple paths (future):**
+```
+path:/finance/taxes/ OR path:/finance/receipts/
+```
+
+**Metadata query (future - TBD):**
+```
+type:pdf AND category:finance/*
+```
+
+**Input object:**
 ```json
 {
-  "type": "subtree",
-  "paths": ["finance/taxes/2024/", "finance/receipts/"]
+  "query": "path:/finance/taxes/2024/scans/",
+  "tree_fingerprint": "sha256:abc123..."
 }
 ```
 
-**Drop (all entries from a drop):**
-```json
-{
-  "type": "drop",
-  "drop_id": "d_20260329_120000_abc123"
-}
-```
+- `query`: The selection query (resolved at transform start)
+- `tree_fingerprint`: Hash of the checkout (records exact state)
 
-**Query (future - metadata query):**
-```json
-{
-  "type": "query",
-  "expression": "category:finance/* AND type:pdf"
-}
-```
-
-**Key principle:** We do NOT enumerate the resolved entries. Given the archive state at this point in history (derived from replaying prior records), the input can be resolved.
+**Key principle:** We store the QUERY, not the resolved entries. Given the archive state at this point in history (derived from replaying prior records), the input can be resolved. The `tree_fingerprint` provides verification.
 
 ---
 
-## Output Consistency
+## Output Schema
 
-Transformation output creates a **standard drop**:
+The `output` field uses **exact same schema as drop receipt**:
 
+```json
+"output": {
+  "drop_id": "d_20260329_140100_def456",
+  "message": "OCR scanned invoices",
+  "actor": "heinrich",
+  "created_at": "2026-03-29T14:01:00Z",
+  "tree_fingerprint": "sha256:xyz789..."
+}
 ```
-_history/
-  003_transform_t_20260329_140000_xyz789.json   ← Links input → output
-  004_drop_d_20260329_140100_def456/            ← Standard drop structure
-    receipt.json
-    tree/
-      invoice-001-ocr.pdf
-      invoice-002-ocr.pdf
-```
 
-The transformation record's `output.drop_id` points to the output drop.
-
-**For merge:** Transformation also includes `classifications[]` (same format as classify record).
+The transformation folder contains the output `tree/` directly - it's self-contained with both provenance (input) and content (output tree/).
 
 ---
 
@@ -208,23 +197,20 @@ _history/
       scan-003.pdf
 
   002_classify.json                    # Triage: classify to finance/scans/
-    # classifications: scan-*.pdf → finance/scans/
 
-  003_transform_t_20260329_140000_xyz.json   # Transform: OCR processing
-    # input: subtree finance/scans/
-    # output: drop d_20260329_140100_def
-
-  004_drop_d_20260329_140100_def/      # Output drop (created by transform)
-    receipt.json
-    tree/
+  003_transform_t_20260329_140000_xyz/  # Transform: OCR processing
+    receipt.json                        # Contains input query + output metadata
+    tree/                               # Output files
       scan-001-ocr.pdf
       scan-002-ocr.pdf
       scan-003-ocr.pdf
 
-  005_classify.json                    # Triage output OR embedded in transform
-    # (if transform import, need separate classify)
-    # (if transform merge, classifications in transform record)
+  004_classify.json                    # Classify record (always separate)
+                                       # For import: user triages manually
+                                       # For merge: auto-generated with prefix
 ```
+
+**Note:** Transformation is a directory (like drop), not a standalone .json file. It contains both the provenance metadata and the output tree. For merge operations, the classify record is created automatically.
 
 ---
 
@@ -255,4 +241,6 @@ def rebuild_from_history(history_dir, db_path):
 |--------|-----------------|-------|--------|
 | Drop | entries, blobs | External files | tree/ folder |
 | Classify | documents | Entry references | Category assignments |
-| Transform | provenance link | Query spec | Drop reference |
+| Transform | provenance link | Query spec | Output drop (same as drop) |
+
+**Note:** Transform + Merge = Transform record + Classify record (two separate history events)
